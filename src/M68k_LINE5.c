@@ -11,6 +11,16 @@
 #include "M68k.h"
 #include "RegisterAllocator.h"
 
+/* Architecture compatibility macros */
+#ifndef __aarch64__
+#define A64_CC_EQ ARM_CC_EQ
+#define A64_CC_AL ARM_CC_AL
+#define A64_CC_NE ARM_CC_NE
+#define A64_CC_PL ARM_CC_PL
+#define A64_CC_MI ARM_CC_MI
+#define LSL 0
+#endif
+
 uint32_t *EMIT_ADDQ(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
 {
     uint8_t update_mask = M68K_GetSRMask(*m68k_ptr - 1);
@@ -627,7 +637,11 @@ uint32_t *EMIT_DBcc(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
             uint8_t reg = RA_AllocARMRegister(&ptr);
             *ptr++ = movw_immed_u16(reg, off & 0xffff);
             *ptr++ = movt_immed_u16(reg, (off >> 16) & 0xffff);
+#ifdef __aarch64__
             *ptr++ = add_reg(c_false, REG_PC, reg, LSL, 0);
+#else
+            *ptr++ = add_reg(c_false, REG_PC, reg, 0);
+#endif
             RA_FreeARMRegister(&ptr, reg);
         } else /* branch_offset == 0 */
         {

@@ -10,6 +10,7 @@
 #include "support.h"
 #include "M68k.h"
 #include "RegisterAllocator.h"
+#include "ArchCompat.h"
 
 static uint32_t *EMIT_ASR_mem(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr) __attribute__((alias("EMIT_ASL_mem")));
 static uint32_t *EMIT_ASL_mem(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
@@ -76,19 +77,47 @@ static uint32_t *EMIT_ASL_mem(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_pt
         uint8_t tmp2 = RA_AllocARMRegister(&ptr);
         
         *ptr++ = mov_immed_u16(tmp2, update_mask, 0);
+#ifdef __aarch64__
+#ifdef __aarch64__
         *ptr++ = bic_reg(cc, cc, tmp2, LSL, 0);
+#else
+            *ptr++ = bic_reg(cc, cc, tmp2, 0);
+#endif
+#else
+            *ptr++ = bic_reg(cc, cc, tmp2);
+#endif
 
         if (update_mask & (SR_C | SR_X)) {
             *ptr++ = b_cc(A64_CC_EQ, 3);
             *ptr++ = mov_immed_u16(tmp2, SR_C | SR_X, 0);
+#ifdef __aarch64__
+#ifdef __aarch64__
             *ptr++ = orr_reg(cc, cc, tmp2, LSL, 0);
+#else
+            *ptr++ = orr_reg(cc, cc, tmp2, 0);
+#endif
+#else
+            *ptr++ = orr_reg(cc, cc, tmp2, 0);
+#endif
         }
 
         RA_FreeARMRegister(&ptr, tmp2);
 
         if (update_mask & (SR_Z | SR_N))
         {
+#ifdef __aarch64__
+#ifdef __aarch64__
             *ptr++ = cmn_reg(31, tmp, LSL, 16);
+#else
+            *ptr++ = lsl_immed(tmp, tmp, 16);
+            *ptr++ = cmn_reg(tmp, 0);
+            *ptr++ = lsr_immed(tmp, tmp, 16);
+#endif
+#else
+            *ptr++ = lsl_immed(tmp, tmp, 16);
+            *ptr++ = cmn_reg(tmp, 0);
+            *ptr++ = lsr_immed(tmp, tmp, 16);
+#endif
             *ptr++ = mov_immed_u16(tmp, update_mask, 0);
         
             if (update_mask & SR_Z) {
@@ -182,19 +211,47 @@ static uint32_t *EMIT_LSL_mem(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_pt
         uint8_t tmp2 = RA_AllocARMRegister(&ptr);
         
         *ptr++ = mov_immed_u16(tmp2, update_mask, 0);
+#ifdef __aarch64__
+#ifdef __aarch64__
         *ptr++ = bic_reg(cc, cc, tmp2, LSL, 0);
+#else
+            *ptr++ = bic_reg(cc, cc, tmp2, 0);
+#endif
+#else
+            *ptr++ = bic_reg(cc, cc, tmp2);
+#endif
 
         if (update_mask & (SR_C | SR_X)) {
             *ptr++ = b_cc(A64_CC_EQ, 3);
             *ptr++ = mov_immed_u16(tmp2, SR_C | SR_X, 0);
+#ifdef __aarch64__
+#ifdef __aarch64__
             *ptr++ = orr_reg(cc, cc, tmp2, LSL, 0);
+#else
+            *ptr++ = orr_reg(cc, cc, tmp2, 0);
+#endif
+#else
+            *ptr++ = orr_reg(cc, cc, tmp2, 0);
+#endif
         }
 
         RA_FreeARMRegister(&ptr, tmp2);
 
         if (update_mask & (SR_Z | SR_N))
         {
+#ifdef __aarch64__
+#ifdef __aarch64__
             *ptr++ = cmn_reg(31, tmp, LSL, 16);
+#else
+            *ptr++ = lsl_immed(tmp, tmp, 16);
+            *ptr++ = cmn_reg(tmp, 0);
+            *ptr++ = lsr_immed(tmp, tmp, 16);
+#endif
+#else
+            *ptr++ = lsl_immed(tmp, tmp, 16);
+            *ptr++ = cmn_reg(tmp, 0);
+            *ptr++ = lsr_immed(tmp, tmp, 16);
+#endif
             *ptr++ = mov_immed_u16(tmp, update_mask, 0);
         
             if (update_mask & SR_Z) {
@@ -242,15 +299,35 @@ static uint32_t *EMIT_ROXL_mem(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_p
     }
 
     /* Test X flag, push the flag value into tmp register */
+#ifdef __aarch64__
     *ptr++ = tst_immed(cc, 1, 32 - SRB_X);
+#else
+    *ptr++ = tst_immed(cc, (1 << (32 - SRB_X)));
+#endif
     *ptr++ = b_cc(A64_CC_EQ, 2);
 
     if (direction) {
+#ifdef __aarch64__
+#ifdef __aarch64__
         *ptr++ = orr_immed(tmp, tmp, 1, 1);
+#else
+            *ptr++ = orr_immed(tmp, tmp, ((1 << 1) - 1));
+#endif
+#else
+            *ptr++ = orr_immed(tmp, tmp, (1 << (1)));
+#endif
         *ptr++ = ror(tmp, tmp, 31);
     }
     else {
+#ifdef __aarch64__
+#ifdef __aarch64__
         *ptr++ = orr_immed(tmp, tmp, 1, 16);
+#else
+            *ptr++ = orr_immed(tmp, tmp, ((1 << 1) - 1));
+#endif
+#else
+            *ptr++ = orr_immed(tmp, tmp, (1 << (16)));
+#endif
         *ptr++ = ror(tmp, tmp, 1);
     }
 
@@ -271,7 +348,19 @@ static uint32_t *EMIT_ROXL_mem(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_p
 
         if (update_mask & (SR_Z | SR_N))
         {
+#ifdef __aarch64__
+#ifdef __aarch64__
             *ptr++ = cmn_reg(31, tmp, LSL, 16);
+#else
+            *ptr++ = lsl_immed(tmp, tmp, 16);
+            *ptr++ = cmn_reg(tmp, 0);
+            *ptr++ = lsr_immed(tmp, tmp, 16);
+#endif
+#else
+            *ptr++ = lsl_immed(tmp, tmp, 16);
+            *ptr++ = cmn_reg(tmp, 0);
+            *ptr++ = lsr_immed(tmp, tmp, 16);
+#endif
             ptr = EMIT_GetNZ00(ptr, cc, &update_mask);
         }
 
@@ -347,10 +436,30 @@ static uint32_t *EMIT_ROL_mem(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_pt
         uint8_t cc = RA_ModifyCC(&ptr);
         if (update_mask & (SR_Z | SR_N))
         {
+#ifdef __aarch64__
+#ifdef __aarch64__
             *ptr++ = cmn_reg(31, tmp, LSL, 16);
+#else
+            *ptr++ = lsl_immed(tmp, tmp, 16);
+            *ptr++ = cmn_reg(tmp, 0);
+            *ptr++ = lsr_immed(tmp, tmp, 16);
+#endif
+#else
+            *ptr++ = lsl_immed(tmp, tmp, 16);
+            *ptr++ = cmn_reg(tmp, 0);
+            *ptr++ = lsr_immed(tmp, tmp, 16);
+#endif
         }
         *ptr++ = mov_immed_u16(tmp, update_mask, 0);
+#ifdef __aarch64__
+#ifdef __aarch64__
         *ptr++ = bic_reg(cc, cc, tmp, LSL, 0);
+#else
+            *ptr++ = bic_reg(cc, cc, tmp, 0);
+#endif
+#else
+            *ptr++ = bic_reg(cc, cc, tmp);
+#endif
 
         if (update_mask & SR_Z) {
             *ptr++ = b_cc(A64_CC_EQ ^ 1, 2);
@@ -370,7 +479,15 @@ static uint32_t *EMIT_ROL_mem(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_pt
             }
             *ptr++ = b_cc(A64_CC_EQ, 3);
             *ptr++ = mov_immed_u16(tmp, SR_C | SR_X, 0);
+#ifdef __aarch64__
+#ifdef __aarch64__
             *ptr++ = orr_reg(cc, cc, tmp, LSL, 0);
+#else
+            *ptr++ = orr_reg(cc, cc, tmp, 0);
+#endif
+#else
+            *ptr++ = orr_reg(cc, cc, tmp, 0);
+#endif
         }
 #else
         M68K_ModifyCC(&ptr);
@@ -611,12 +728,28 @@ static uint32_t *EMIT_ASL(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
         uint8_t tmp2 = RA_AllocARMRegister(&ptr);
 
         *ptr++ = mov_immed_u16(tmp2, update_mask, 0);
+#ifdef __aarch64__
+#ifdef __aarch64__
         *ptr++ = bic_reg(cc, cc, tmp2, LSL, 0);
+#else
+            *ptr++ = bic_reg(cc, cc, tmp2, 0);
+#endif
+#else
+            *ptr++ = bic_reg(cc, cc, tmp2);
+#endif
 
         if (update_mask & (SR_C | SR_X)) {
             *ptr++ = b_cc(A64_CC_EQ, 3);
             *ptr++ = mov_immed_u16(tmp2, SR_C | SR_X, 0);
+#ifdef __aarch64__
+#ifdef __aarch64__
             *ptr++ = orr_reg(cc, cc, tmp2, LSL, 0);
+#else
+            *ptr++ = orr_reg(cc, cc, tmp2, 0);
+#endif
+#else
+            *ptr++ = orr_reg(cc, cc, tmp2, 0);
+#endif
         }
 
         RA_FreeARMRegister(&ptr, tmp2);
@@ -626,13 +759,47 @@ static uint32_t *EMIT_ASL(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
             switch(size)
             {
                 case 4:
+#ifdef __aarch64__
+#ifdef __aarch64__
                     *ptr++ = cmn_reg(31, reg, LSL, 0);
+#else
+            *ptr++ = lsl_immed(reg, reg, 0);
+            *ptr++ = cmn_reg(reg, 0);
+            *ptr++ = lsr_immed(reg, reg, 0);
+#endif
+#else
+            *ptr++ = cmn_reg(reg, 0);
+#endif
                     break;
                 case 2:
+#ifdef __aarch64__
+#ifdef __aarch64__
                     *ptr++ = cmn_reg(31, tmp, LSL, 16);
+#else
+            *ptr++ = lsl_immed(tmp, tmp, 16);
+            *ptr++ = cmn_reg(tmp, 0);
+            *ptr++ = lsr_immed(tmp, tmp, 16);
+#endif
+#else
+            *ptr++ = lsl_immed(tmp, tmp, 16);
+            *ptr++ = cmn_reg(tmp, 0);
+            *ptr++ = lsr_immed(tmp, tmp, 16);
+#endif
                     break;
                 case 1:
+#ifdef __aarch64__
+#ifdef __aarch64__
                     *ptr++ = cmn_reg(31, tmp, LSL, 24);
+#else
+            *ptr++ = lsl_immed(tmp, tmp, 24);
+            *ptr++ = cmn_reg(tmp, 0);
+            *ptr++ = lsr_immed(tmp, tmp, 24);
+#endif
+#else
+            *ptr++ = lsl_immed(tmp, tmp, 24);
+            *ptr++ = cmn_reg(tmp, 0);
+            *ptr++ = lsr_immed(tmp, tmp, 24);
+#endif
                     break;
             }
 
@@ -742,7 +909,15 @@ static uint32_t *EMIT_LSL(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
                 *ptr++ = mov_reg(tmp, reg);
                 if (update_mask & (SR_C | SR_X))
                 {
+#ifdef __aarch64__
+#ifdef __aarch64__
                     *ptr++ = ands_reg(31, tmp, mask, LSL, 0);
+#else
+            *ptr++ = ands_reg(31, tmp, mask, 0);
+#endif
+#else
+            *ptr++ = ands_reg(31, tmp, mask, 0);
+#endif
                 }
                 *ptr++ = lsrv64(tmp, tmp, shiftreg);
                 *ptr++ = mov_reg(reg, tmp);
@@ -755,7 +930,15 @@ static uint32_t *EMIT_LSL(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
                 *ptr++ = uxth(tmp, reg);
                 if (update_mask & (SR_C | SR_X))
                 {
+#ifdef __aarch64__
+#ifdef __aarch64__
                     *ptr++ = ands_reg(31, tmp, mask, LSL, 0);
+#else
+            *ptr++ = ands_reg(31, tmp, mask, 0);
+#endif
+#else
+            *ptr++ = ands_reg(31, tmp, mask, 0);
+#endif
                 }
                 *ptr++ = lsrv64(tmp, tmp, shiftreg);
 #else
@@ -769,7 +952,15 @@ static uint32_t *EMIT_LSL(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
                 *ptr++ = uxtb(tmp, reg);
                 if (update_mask & (SR_C | SR_X))
                 {
+#ifdef __aarch64__
+#ifdef __aarch64__
                     *ptr++ = ands_reg(31, tmp, mask, LSL, 0);
+#else
+            *ptr++ = ands_reg(31, tmp, mask, 0);
+#endif
+#else
+            *ptr++ = ands_reg(31, tmp, mask, 0);
+#endif
                 }
                 *ptr++ = lsrv64(tmp, tmp, shiftreg);
 #else
@@ -885,12 +1076,28 @@ static uint32_t *EMIT_LSL(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
         uint8_t tmp2 = RA_AllocARMRegister(&ptr);
 
         *ptr++ = mov_immed_u16(tmp2, update_mask, 0);
+#ifdef __aarch64__
+#ifdef __aarch64__
         *ptr++ = bic_reg(cc, cc, tmp2, LSL, 0);
+#else
+            *ptr++ = bic_reg(cc, cc, tmp2, 0);
+#endif
+#else
+            *ptr++ = bic_reg(cc, cc, tmp2);
+#endif
 
         if (update_mask & (SR_C | SR_X)) {
             *ptr++ = b_cc(A64_CC_EQ, 3);
             *ptr++ = mov_immed_u16(tmp2, SR_C | SR_X, 0);
+#ifdef __aarch64__
+#ifdef __aarch64__
             *ptr++ = orr_reg(cc, cc, tmp2, LSL, 0);
+#else
+            *ptr++ = orr_reg(cc, cc, tmp2, 0);
+#endif
+#else
+            *ptr++ = orr_reg(cc, cc, tmp2, 0);
+#endif
         }
 
         RA_FreeARMRegister(&ptr, tmp2);
@@ -900,13 +1107,47 @@ static uint32_t *EMIT_LSL(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
             switch(size)
             {
                 case 4:
+#ifdef __aarch64__
+#ifdef __aarch64__
                     *ptr++ = cmn_reg(31, reg, LSL, 0);
+#else
+            *ptr++ = lsl_immed(reg, reg, 0);
+            *ptr++ = cmn_reg(reg, 0);
+            *ptr++ = lsr_immed(reg, reg, 0);
+#endif
+#else
+            *ptr++ = cmn_reg(reg, 0);
+#endif
                     break;
                 case 2:
+#ifdef __aarch64__
+#ifdef __aarch64__
                     *ptr++ = cmn_reg(31, tmp, LSL, 16);
+#else
+            *ptr++ = lsl_immed(tmp, tmp, 16);
+            *ptr++ = cmn_reg(tmp, 0);
+            *ptr++ = lsr_immed(tmp, tmp, 16);
+#endif
+#else
+            *ptr++ = lsl_immed(tmp, tmp, 16);
+            *ptr++ = cmn_reg(tmp, 0);
+            *ptr++ = lsr_immed(tmp, tmp, 16);
+#endif
                     break;
                 case 1:
+#ifdef __aarch64__
+#ifdef __aarch64__
                     *ptr++ = cmn_reg(31, tmp, LSL, 24);
+#else
+            *ptr++ = lsl_immed(tmp, tmp, 24);
+            *ptr++ = cmn_reg(tmp, 0);
+            *ptr++ = lsr_immed(tmp, tmp, 24);
+#endif
+#else
+            *ptr++ = lsl_immed(tmp, tmp, 24);
+            *ptr++ = cmn_reg(tmp, 0);
+            *ptr++ = lsr_immed(tmp, tmp, 24);
+#endif
                     break;
             }
 
@@ -1048,13 +1289,47 @@ static uint32_t *EMIT_ROL(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
         switch(size)
         {
             case 4:
+#ifdef __aarch64__
+#ifdef __aarch64__
                 *ptr++ = cmn_reg(31, reg, LSL, 0);
+#else
+            *ptr++ = lsl_immed(reg, reg, 0);
+            *ptr++ = cmn_reg(reg, 0);
+            *ptr++ = lsr_immed(reg, reg, 0);
+#endif
+#else
+            *ptr++ = cmn_reg(reg, 0);
+#endif
                 break;
             case 2:
+#ifdef __aarch64__
+#ifdef __aarch64__
                 *ptr++ = cmn_reg(31, tmp, LSL, 16);
+#else
+            *ptr++ = lsl_immed(tmp, tmp, 16);
+            *ptr++ = cmn_reg(tmp, 0);
+            *ptr++ = lsr_immed(tmp, tmp, 16);
+#endif
+#else
+            *ptr++ = lsl_immed(tmp, tmp, 16);
+            *ptr++ = cmn_reg(tmp, 0);
+            *ptr++ = lsr_immed(tmp, tmp, 16);
+#endif
                 break;
             case 1:
+#ifdef __aarch64__
+#ifdef __aarch64__
                 *ptr++ = cmn_reg(31, tmp, LSL, 24);
+#else
+            *ptr++ = lsl_immed(tmp, tmp, 24);
+            *ptr++ = cmn_reg(tmp, 0);
+            *ptr++ = lsr_immed(tmp, tmp, 24);
+#endif
+#else
+            *ptr++ = lsl_immed(tmp, tmp, 24);
+            *ptr++ = cmn_reg(tmp, 0);
+            *ptr++ = lsr_immed(tmp, tmp, 24);
+#endif
                 break;
         }
 #endif
@@ -1116,7 +1391,11 @@ static uint32_t *EMIT_ROXL(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
         uint32_t *tmp_ptr;
         
         // Limit rotate amount to 0..63, depending on size calculate modulo 9, 17, 33, depending on size
+#ifdef __aarch64__
         *ptr++ = ands_immed(tmp, amount_reg, 6, 0);
+#else
+            *ptr++ = ands_immed(tmp, amount_reg, ((1 << 6) - 1));
+#endif
 
         // If Z flag is set, don't bother with further ROXL/ROXR - size 0, no reg change
         // Only update CPU flags in that case
@@ -1127,13 +1406,47 @@ static uint32_t *EMIT_ROXL(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
             switch (size)
             {
                 case 0:
+#ifdef __aarch64__
+#ifdef __aarch64__
                     *ptr++ = cmn_reg(31, dest, LSL, 24);
+#else
+            *ptr++ = lsl_immed(dest, dest, 24);
+            *ptr++ = cmn_reg(dest, 0);
+            *ptr++ = lsr_immed(dest, dest, 24);
+#endif
+#else
+            *ptr++ = lsl_immed(dest, dest, 24);
+            *ptr++ = cmn_reg(dest, 0);
+            *ptr++ = lsr_immed(dest, dest, 24);
+#endif
                     break;
                 case 1:
+#ifdef __aarch64__
+#ifdef __aarch64__
                     *ptr++ = cmn_reg(31, dest, LSL, 16);
+#else
+            *ptr++ = lsl_immed(dest, dest, 16);
+            *ptr++ = cmn_reg(dest, 0);
+            *ptr++ = lsr_immed(dest, dest, 16);
+#endif
+#else
+            *ptr++ = lsl_immed(dest, dest, 16);
+            *ptr++ = cmn_reg(dest, 0);
+            *ptr++ = lsr_immed(dest, dest, 16);
+#endif
                     break;
                 case 2:
+#ifdef __aarch64__
+#ifdef __aarch64__
                     *ptr++ = cmn_reg(31, dest, LSL, 0);
+#else
+            *ptr++ = lsl_immed(dest, dest, 0);
+            *ptr++ = cmn_reg(dest, 0);
+            *ptr++ = lsr_immed(dest, dest, 0);
+#endif
+#else
+            *ptr++ = cmn_reg(dest, 0);
+#endif
                     break;
             }
 
@@ -1159,10 +1472,18 @@ static uint32_t *EMIT_ROXL(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
         switch (size)
         {
             case 0:
+#ifdef __aarch64__
                 *ptr++ = and_immed(tmp, dest, 8, 0);
+#else
+            *ptr++ = and_immed(tmp, dest, ((1 << 8) - 1));
+#endif
                 break;
             case 1:
+#ifdef __aarch64__
                 *ptr++ = and_immed(tmp, dest, 16, 0);
+#else
+            *ptr++ = and_immed(tmp, dest, ((1 << 16) - 1));
+#endif
                 break;
             case 2:
                 *ptr++ = mov_reg(tmp, dest);
@@ -1171,7 +1492,11 @@ static uint32_t *EMIT_ROXL(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
         
 
         // Fill the temporary register with repetitions of X and dest
-        *ptr++ = tst_immed(cc, 1, 32 - SRB_X);
+    #ifdef __aarch64__
+    *ptr++ = tst_immed(cc, 1, 32 - SRB_X);
+#else
+    *ptr++ = tst_immed(cc, (1 << (32 - SRB_X)));
+#endif
         if (dir)
         {
             // Rotate left
@@ -1181,7 +1506,15 @@ static uint32_t *EMIT_ROXL(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
                     *ptr++ = neg_reg(amount, amount, LSR, 0);
                     *ptr++ = add_immed(amount, amount, 32);
                     *ptr++ = b_cc(A64_CC_EQ, 2);
+#ifdef __aarch64__
+#ifdef __aarch64__
                     *ptr++ = orr_immed(tmp, tmp, 1, 32 - 8);
+#else
+            *ptr++ = orr_immed(tmp, tmp, ((1 << 1) - 1));
+#endif
+#else
+            *ptr++ = orr_immed(tmp, tmp, (1 << (32 - 8)));
+#endif
                     *ptr++ = bfi(tmp, tmp, 32 - 9, 9);
                     *ptr++ = rorv(tmp, tmp, amount);
                     *ptr++ = bfi(dest, tmp, 0, 8);
@@ -1191,7 +1524,15 @@ static uint32_t *EMIT_ROXL(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
                     *ptr++ = neg_reg(amount, amount, LSR, 0);
                     *ptr++ = add_immed(amount, amount, 64);
                     *ptr++ = b_cc(A64_CC_EQ, 2);
+#ifdef __aarch64__
+#ifdef __aarch64__
                     *ptr++ = orr_immed(tmp, tmp, 1, 32 - 16);
+#else
+            *ptr++ = orr_immed(tmp, tmp, ((1 << 1) - 1));
+#endif
+#else
+            *ptr++ = orr_immed(tmp, tmp, (1 << (32 - 16)));
+#endif
                     *ptr++ = bfi64(tmp, tmp, 64 - 17, 17);
                     *ptr++ = rorv64(tmp, tmp, amount);
                     *ptr++ = bfi(dest, tmp, 0, 16);
@@ -1219,7 +1560,15 @@ static uint32_t *EMIT_ROXL(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
             {
                 case 0: // byte
                     *ptr++ = b_cc(A64_CC_EQ, 2);
+#ifdef __aarch64__
+#ifdef __aarch64__
                     *ptr++ = orr_immed(tmp, tmp, 1, 32 - 8);
+#else
+            *ptr++ = orr_immed(tmp, tmp, ((1 << 1) - 1));
+#endif
+#else
+            *ptr++ = orr_immed(tmp, tmp, (1 << (32 - 8)));
+#endif
                     *ptr++ = bfi(tmp, tmp, 9, 9);
                     *ptr++ = rorv(tmp, tmp, amount);
                     *ptr++ = bfi(dest, tmp, 0, 8);
@@ -1227,7 +1576,15 @@ static uint32_t *EMIT_ROXL(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
                 
                 case 1: // word
                     *ptr++ = b_cc(A64_CC_EQ, 2);
+#ifdef __aarch64__
+#ifdef __aarch64__
                     *ptr++ = orr_immed(tmp, tmp, 1, 32 - 16);
+#else
+            *ptr++ = orr_immed(tmp, tmp, ((1 << 1) - 1));
+#endif
+#else
+            *ptr++ = orr_immed(tmp, tmp, (1 << (32 - 16)));
+#endif
                     *ptr++ = bfi64(tmp, tmp, 17, 17);
                     *ptr++ = rorv64(tmp, tmp, amount);
                     *ptr++ = bfi(dest, tmp, 0, 16);
@@ -1250,13 +1607,47 @@ static uint32_t *EMIT_ROXL(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
             switch (size)
             {
                 case 0:
+#ifdef __aarch64__
+#ifdef __aarch64__
                     *ptr++ = cmn_reg(31, tmp, LSL, 24);
+#else
+            *ptr++ = lsl_immed(tmp, tmp, 24);
+            *ptr++ = cmn_reg(tmp, 0);
+            *ptr++ = lsr_immed(tmp, tmp, 24);
+#endif
+#else
+            *ptr++ = lsl_immed(tmp, tmp, 24);
+            *ptr++ = cmn_reg(tmp, 0);
+            *ptr++ = lsr_immed(tmp, tmp, 24);
+#endif
                     break;
                 case 1:
+#ifdef __aarch64__
+#ifdef __aarch64__
                     *ptr++ = cmn_reg(31, tmp, LSL, 16);
+#else
+            *ptr++ = lsl_immed(tmp, tmp, 16);
+            *ptr++ = cmn_reg(tmp, 0);
+            *ptr++ = lsr_immed(tmp, tmp, 16);
+#endif
+#else
+            *ptr++ = lsl_immed(tmp, tmp, 16);
+            *ptr++ = cmn_reg(tmp, 0);
+            *ptr++ = lsr_immed(tmp, tmp, 16);
+#endif
                     break;
                 case 2:
+#ifdef __aarch64__
+#ifdef __aarch64__
                     *ptr++ = cmn_reg(31, tmp, LSL, 0);
+#else
+            *ptr++ = lsl_immed(tmp, tmp, 0);
+            *ptr++ = cmn_reg(tmp, 0);
+            *ptr++ = lsr_immed(tmp, tmp, 0);
+#endif
+#else
+            *ptr++ = cmn_reg(tmp, 0);
+#endif
                     break;
             }
 
@@ -1307,9 +1698,25 @@ static uint32_t *EMIT_ROXL(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
 
                 case 0: // byte
                     *ptr++ = mov_reg(tmp, dest);
+#ifdef __aarch64__
+#ifdef __aarch64__
                     *ptr++ = bic_immed(tmp, tmp, 1, 1);
+#else
+            *ptr++ = bic_immed(tmp, tmp, ((1 << 1) - 1));
+#endif
+#else
+            *ptr++ = bic_immed(tmp, tmp, (1 << (1)));
+#endif
                     *ptr++ = tbz(cc, SRB_X, 2);
+#ifdef __aarch64__
+#ifdef __aarch64__
                     *ptr++ = orr_immed(tmp, tmp, 1, 1);
+#else
+            *ptr++ = orr_immed(tmp, tmp, ((1 << 1) - 1));
+#endif
+#else
+            *ptr++ = orr_immed(tmp, tmp, (1 << (1)));
+#endif
                     *ptr++ = bfi(tmp, tmp, 31-8, 8);
                     *ptr++ = ror(tmp, tmp, 32 - amount);
                     *ptr++ = bfi(dest, tmp, 0, 8);
@@ -1322,9 +1729,25 @@ static uint32_t *EMIT_ROXL(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
 
                 case 1: // word
                     *ptr++ = mov_reg(tmp, dest);
+#ifdef __aarch64__
+#ifdef __aarch64__
                     *ptr++ = bic_immed(tmp, tmp, 1, 1);
+#else
+            *ptr++ = bic_immed(tmp, tmp, ((1 << 1) - 1));
+#endif
+#else
+            *ptr++ = bic_immed(tmp, tmp, (1 << (1)));
+#endif
                     *ptr++ = tbz(cc, SRB_X, 2);
+#ifdef __aarch64__
+#ifdef __aarch64__
                     *ptr++ = orr_immed(tmp, tmp, 1, 1);
+#else
+            *ptr++ = orr_immed(tmp, tmp, ((1 << 1) - 1));
+#endif
+#else
+            *ptr++ = orr_immed(tmp, tmp, (1 << (1)));
+#endif
                     *ptr++ = bfi64(tmp, tmp, 31-16, 16);
                     *ptr++ = ror(tmp, tmp, 32 - amount);
                     *ptr++ = bfi(dest, tmp, 0, 16);
@@ -1352,18 +1775,50 @@ static uint32_t *EMIT_ROXL(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
             {
                 case 0: // byte
                     *ptr++ = mov_reg(tmp, dest);
+#ifdef __aarch64__
+#ifdef __aarch64__
                     *ptr++ = bic_immed(tmp, tmp, 1, 32 - 8);
+#else
+            *ptr++ = bic_immed(tmp, tmp, ((1 << 1) - 1));
+#endif
+#else
+            *ptr++ = bic_immed(tmp, tmp, (1 << (32 - 8)));
+#endif
                     *ptr++ = tbz(cc, SRB_X, 2);
+#ifdef __aarch64__
+#ifdef __aarch64__
                     *ptr++ = orr_immed(tmp, tmp, 1, 32 - 8);
+#else
+            *ptr++ = orr_immed(tmp, tmp, ((1 << 1) - 1));
+#endif
+#else
+            *ptr++ = orr_immed(tmp, tmp, (1 << (32 - 8)));
+#endif
                     *ptr++ = bfi(tmp, tmp, 9, 9);
                     *ptr++ = ror(tmp, tmp, amount);
                     *ptr++ = bfi(dest, tmp, 0, 8);
                     break;
                 case 1: // word
                     *ptr++ = mov_reg(tmp, dest);
+#ifdef __aarch64__
+#ifdef __aarch64__
                     *ptr++ = bic_immed(tmp, tmp, 1, 32 - 16);
+#else
+            *ptr++ = bic_immed(tmp, tmp, ((1 << 1) - 1));
+#endif
+#else
+            *ptr++ = bic_immed(tmp, tmp, (1 << (32 - 16)));
+#endif
                     *ptr++ = tbz(cc, SRB_X, 2);
+#ifdef __aarch64__
+#ifdef __aarch64__
                     *ptr++ = orr_immed(tmp, tmp, 1, 32 - 16);
+#else
+            *ptr++ = orr_immed(tmp, tmp, ((1 << 1) - 1));
+#endif
+#else
+            *ptr++ = orr_immed(tmp, tmp, (1 << (32 - 16)));
+#endif
                     *ptr++ = bfi64(tmp, tmp, 17, 17);
                     *ptr++ = ror64(tmp, tmp, amount);
                     *ptr++ = bfi(dest, tmp, 0, 16);
@@ -1385,13 +1840,47 @@ static uint32_t *EMIT_ROXL(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
             switch (size)
             {
                 case 0:
+#ifdef __aarch64__
+#ifdef __aarch64__
                     *ptr++ = cmn_reg(31, tmp, LSL, 24);
+#else
+            *ptr++ = lsl_immed(tmp, tmp, 24);
+            *ptr++ = cmn_reg(tmp, 0);
+            *ptr++ = lsr_immed(tmp, tmp, 24);
+#endif
+#else
+            *ptr++ = lsl_immed(tmp, tmp, 24);
+            *ptr++ = cmn_reg(tmp, 0);
+            *ptr++ = lsr_immed(tmp, tmp, 24);
+#endif
                     break;
                 case 1:
+#ifdef __aarch64__
+#ifdef __aarch64__
                     *ptr++ = cmn_reg(31, tmp, LSL, 16);
+#else
+            *ptr++ = lsl_immed(tmp, tmp, 16);
+            *ptr++ = cmn_reg(tmp, 0);
+            *ptr++ = lsr_immed(tmp, tmp, 16);
+#endif
+#else
+            *ptr++ = lsl_immed(tmp, tmp, 16);
+            *ptr++ = cmn_reg(tmp, 0);
+            *ptr++ = lsr_immed(tmp, tmp, 16);
+#endif
                     break;
                 case 2:
+#ifdef __aarch64__
+#ifdef __aarch64__
                     *ptr++ = cmn_reg(31, tmp, LSL, 0);
+#else
+            *ptr++ = lsl_immed(tmp, tmp, 0);
+            *ptr++ = cmn_reg(tmp, 0);
+            *ptr++ = lsr_immed(tmp, tmp, 0);
+#endif
+#else
+            *ptr++ = cmn_reg(tmp, 0);
+#endif
                     break;
             }
 
@@ -1478,7 +1967,17 @@ static uint32_t *EMIT_BFTST(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
                 if (update_mask)
                 {
                     uint8_t cc = RA_ModifyCC(&ptr);
+#ifdef __aarch64__
+#ifdef __aarch64__
                     *ptr++ = cmn_reg(31, tmp, LSL, 0);
+#else
+            *ptr++ = lsl_immed(tmp, tmp, 0);
+            *ptr++ = cmn_reg(tmp, 0);
+            *ptr++ = lsr_immed(tmp, tmp, 0);
+#endif
+#else
+            *ptr++ = cmn_reg(tmp, 0);
+#endif
                     ptr = EMIT_GetNZ00(ptr, cc, &update_mask);
                 }
 
@@ -1489,7 +1988,17 @@ static uint32_t *EMIT_BFTST(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
                 if (update_mask)
                 {
                     uint8_t cc = RA_ModifyCC(&ptr);
+#ifdef __aarch64__
+#ifdef __aarch64__
                     *ptr++ = cmn_reg(31, src, LSL, 0);
+#else
+            *ptr++ = lsl_immed(src, src, 0);
+            *ptr++ = cmn_reg(src, 0);
+            *ptr++ = lsr_immed(src, src, 0);
+#endif
+#else
+            *ptr++ = cmn_reg(src, 0);
+#endif
                     ptr = EMIT_GetNZ00(ptr, cc, &update_mask);
                 }
             }
@@ -1508,7 +2017,11 @@ static uint32_t *EMIT_BFTST(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
             *ptr++ = orr64_reg(tmp, tmp, src, LSL, offset);
 
             // Build up a mask
+#ifdef __aarch64__
             *ptr++ = and_immed(width_reg, width_reg, 5, 0);
+#else
+            *ptr++ = and_immed(width_reg, width_reg, ((1 << 5) - 1));
+#endif
             *ptr++ = cbnz(width_reg, 2);
             *ptr++ = mov_immed_u16(width_reg, 32, 0);
             *ptr++ = mov_immed_u16(mask_reg, 1, 0);
@@ -1537,7 +2050,11 @@ static uint32_t *EMIT_BFTST(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
             uint8_t tmp = RA_AllocARMRegister(&ptr);
             uint8_t width = opcode2 & 31;
 
+#ifdef __aarch64__
             *ptr++ = and_immed(off_reg, off_reg, 5, 0);
+#else
+            *ptr++ = and_immed(off_reg, off_reg, ((1 << 5) - 1));
+#endif
 
             if (width == 0)
                 width = 32;
@@ -1571,10 +2088,18 @@ static uint32_t *EMIT_BFTST(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
             uint8_t mask_reg = RA_AllocARMRegister(&ptr);
             uint8_t tmp = RA_AllocARMRegister(&ptr);
 
+#ifdef __aarch64__
             *ptr++ = and_immed(off_reg, off_reg, 5, 0);
+#else
+            *ptr++ = and_immed(off_reg, off_reg, ((1 << 5) - 1));
+#endif
 
             // Build up a mask
+#ifdef __aarch64__
             *ptr++ = and_immed(width_reg, width_reg, 5, 0);
+#else
+            *ptr++ = and_immed(width_reg, width_reg, ((1 << 5) - 1));
+#endif
             *ptr++ = cbnz(width_reg, 2);
             *ptr++ = mov_immed_u16(width_reg, 32, 0);
             *ptr++ = mov_immed_u16(mask_reg, 1, 0);
@@ -1650,7 +2175,11 @@ static uint32_t *EMIT_BFTST(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
             }
 
             // Build up a mask
+#ifdef __aarch64__
             *ptr++ = and_immed(width_reg, width_reg, 5, 0);
+#else
+            *ptr++ = and_immed(width_reg, width_reg, ((1 << 5) - 1));
+#endif
             *ptr++ = cbnz(width_reg, 2);
             *ptr++ = mov_immed_u16(width_reg, 32, 0);
             *ptr++ = mov_immed_u16(mask_reg, 1, 0);
@@ -1683,8 +2212,17 @@ static uint32_t *EMIT_BFTST(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
                 width = 32;
 
             // Adjust base register according to the offset
+#ifdef __aarch64__
             *ptr++ = add_reg(base, base, off_reg, ASR, 3);
+#else
+            *ptr++ = asr_immed(off_reg, off_reg, 3);
+            *ptr++ = add_reg(base, base, off_reg, 0);
+#endif
+#ifdef __aarch64__
             *ptr++ = and_immed(off_reg, off_reg, 3, 0);
+#else
+            *ptr++ = and_immed(off_reg, off_reg, ((1 << 3) - 1));
+#endif
 
             // Build up a mask
             *ptr++ = orr64_immed(mask_reg, 31, width, width, 1);
@@ -1715,11 +2253,24 @@ static uint32_t *EMIT_BFTST(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
             uint8_t tmp = RA_AllocARMRegister(&ptr);
 
             // Adjust base register according to the offset
+#ifdef __aarch64__
             *ptr++ = add_reg(base, base, off_reg, ASR, 3);
+#else
+            *ptr++ = asr_immed(off_reg, off_reg, 3);
+            *ptr++ = add_reg(base, base, off_reg, 0);
+#endif
+#ifdef __aarch64__
             *ptr++ = and_immed(off_reg, off_reg, 3, 0);
+#else
+            *ptr++ = and_immed(off_reg, off_reg, ((1 << 3) - 1));
+#endif
 
             // Build up a mask
+#ifdef __aarch64__
             *ptr++ = and_immed(width_reg, width_reg, 5, 0);
+#else
+            *ptr++ = and_immed(width_reg, width_reg, ((1 << 5) - 1));
+#endif
             *ptr++ = cbnz(width_reg, 2);
             *ptr++ = mov_immed_u16(width_reg, 32, 0);
             *ptr++ = mov_immed_u16(mask_reg, 1, 0);
@@ -1807,7 +2358,13 @@ static uint32_t *EMIT_BFEXTU(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr
 
             if (update_mask) {
                 uint8_t cc = RA_ModifyCC(&ptr);
+#ifdef __aarch64__
                 *ptr++ = cmn_reg(31, dest, LSL, 32 - width);
+#else
+            *ptr++ = lsl_immed(dest, dest, 32 - width);
+            *ptr++ = cmn_reg(dest, 0);
+            *ptr++ = lsr_immed(dest, dest, 32 - width);
+#endif
                 ptr = EMIT_GetNZ00(ptr, cc, &update_mask);
             }
         }
@@ -1826,7 +2383,11 @@ static uint32_t *EMIT_BFEXTU(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr
             *ptr++ = orr64_reg(tmp, tmp, src, LSL, offset);
 
             // Build up a mask
+#ifdef __aarch64__
             *ptr++ = and_immed(width_reg, width_reg, 5, 0);
+#else
+            *ptr++ = and_immed(width_reg, width_reg, ((1 << 5) - 1));
+#endif
             *ptr++ = cbnz(width_reg, 2);
             *ptr++ = mov_immed_u16(width_reg, 32, 0);
             *ptr++ = mov_immed_u16(mask_reg, 1, 0);
@@ -1839,7 +2400,15 @@ static uint32_t *EMIT_BFEXTU(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr
 
             // Arithmetic shift right 64-width bits
             *ptr++ = mov_immed_u16(mask_reg, 64, 0);
+#ifdef __aarch64__
+#ifdef __aarch64__
             *ptr++ = sub_reg(width_reg, mask_reg, width_reg, LSL, 0);
+#else
+            *ptr++ = sub_reg(width_reg, mask_reg, width_reg, 0);
+#endif
+#else
+            *ptr++ = sub_reg(width_reg, mask_reg, width_reg, 0);
+#endif
             *ptr++ = lsrv64(tmp, tmp, width_reg);
             
             // Move to destination register
@@ -1864,7 +2433,11 @@ static uint32_t *EMIT_BFEXTU(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr
             uint8_t tmp = RA_AllocARMRegister(&ptr);
             uint8_t width = opcode2 & 31;
 
+#ifdef __aarch64__
             *ptr++ = and_immed(off_reg, off_reg, 5, 0);
+#else
+            *ptr++ = and_immed(off_reg, off_reg, ((1 << 5) - 1));
+#endif
             
             if (width == 0)
                 width = 32;
@@ -1905,10 +2478,18 @@ static uint32_t *EMIT_BFEXTU(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr
             uint8_t mask_reg = RA_AllocARMRegister(&ptr);
             uint8_t tmp = RA_AllocARMRegister(&ptr);
 
+#ifdef __aarch64__
             *ptr++ = and_immed(off_reg, off_reg, 5, 0);
+#else
+            *ptr++ = and_immed(off_reg, off_reg, ((1 << 5) - 1));
+#endif
 
             // Build up a mask
+#ifdef __aarch64__
             *ptr++ = and_immed(width_reg, width_reg, 5, 0);
+#else
+            *ptr++ = and_immed(width_reg, width_reg, ((1 << 5) - 1));
+#endif
             *ptr++ = cbnz(width_reg, 2);
             *ptr++ = mov_immed_u16(width_reg, 32, 0);
             *ptr++ = mov_immed_u16(mask_reg, 1, 0);
@@ -1926,7 +2507,15 @@ static uint32_t *EMIT_BFEXTU(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr
             
             // Arithmetic shift right 64-width bits
             *ptr++ = mov_immed_u16(off_reg, 64, 0);
+#ifdef __aarch64__
+#ifdef __aarch64__
             *ptr++ = sub_reg(width_reg, off_reg, width_reg, LSL, 0);
+#else
+            *ptr++ = sub_reg(width_reg, off_reg, width_reg, 0);
+#endif
+#else
+            *ptr++ = sub_reg(width_reg, off_reg, width_reg, 0);
+#endif
             *ptr++ = lsrv64(tmp, tmp, width_reg);
             
             // Move to destination register
@@ -1997,7 +2586,11 @@ static uint32_t *EMIT_BFEXTU(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr
             }
 
             // Build up a mask
+#ifdef __aarch64__
             *ptr++ = and_immed(width_reg, width_reg, 5, 0);
+#else
+            *ptr++ = and_immed(width_reg, width_reg, ((1 << 5) - 1));
+#endif
             *ptr++ = cbnz(width_reg, 2);
             *ptr++ = mov_immed_u16(width_reg, 32, 0);
             *ptr++ = mov_immed_u16(mask_reg, 1, 0);
@@ -2010,7 +2603,15 @@ static uint32_t *EMIT_BFEXTU(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr
 
             // Arithmetic shift right 64-width bits
             *ptr++ = mov_immed_u16(mask_reg, 64, 0);
+#ifdef __aarch64__
+#ifdef __aarch64__
             *ptr++ = sub_reg(width_reg, mask_reg, width_reg, LSL, 0);
+#else
+            *ptr++ = sub_reg(width_reg, mask_reg, width_reg, 0);
+#endif
+#else
+            *ptr++ = sub_reg(width_reg, mask_reg, width_reg, 0);
+#endif
             *ptr++ = lsrv64(tmp, tmp, width_reg);
             
             // Move to destination register
@@ -2039,8 +2640,17 @@ static uint32_t *EMIT_BFEXTU(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr
                 width = 32;
 
             // Adjust base register according to the offset
+#ifdef __aarch64__
             *ptr++ = add_reg(base, base, off_reg, ASR, 3);
+#else
+            *ptr++ = asr_immed(off_reg, off_reg, 3);
+            *ptr++ = add_reg(base, base, off_reg, 0);
+#endif
+#ifdef __aarch64__
             *ptr++ = and_immed(off_reg, off_reg, 3, 0);
+#else
+            *ptr++ = and_immed(off_reg, off_reg, ((1 << 3) - 1));
+#endif
 
             // Build up a mask
             *ptr++ = orr64_immed(mask_reg, 31, width, width, 1);
@@ -2078,11 +2688,24 @@ static uint32_t *EMIT_BFEXTU(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr
             uint8_t tmp = RA_AllocARMRegister(&ptr);
 
             // Adjust base register according to the offset
+#ifdef __aarch64__
             *ptr++ = add_reg(base, base, off_reg, ASR, 3);
+#else
+            *ptr++ = asr_immed(off_reg, off_reg, 3);
+            *ptr++ = add_reg(base, base, off_reg, 0);
+#endif
+#ifdef __aarch64__
             *ptr++ = and_immed(off_reg, off_reg, 3, 0);
+#else
+            *ptr++ = and_immed(off_reg, off_reg, ((1 << 3) - 1));
+#endif
 
             // Build up a mask
+#ifdef __aarch64__
             *ptr++ = and_immed(width_reg, width_reg, 5, 0);
+#else
+            *ptr++ = and_immed(width_reg, width_reg, ((1 << 5) - 1));
+#endif
             *ptr++ = cbnz(width_reg, 2);
             *ptr++ = mov_immed_u16(width_reg, 32, 0);
             *ptr++ = mov_immed_u16(mask_reg, 1, 0);
@@ -2099,7 +2722,15 @@ static uint32_t *EMIT_BFEXTU(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr
             
             // Arithmetic shift right 64-width bits
             *ptr++ = mov_immed_u16(off_reg, 64, 0);
+#ifdef __aarch64__
+#ifdef __aarch64__
             *ptr++ = sub_reg(width_reg, off_reg, width_reg, LSL, 0);
+#else
+            *ptr++ = sub_reg(width_reg, off_reg, width_reg, 0);
+#endif
+#else
+            *ptr++ = sub_reg(width_reg, off_reg, width_reg, 0);
+#endif
             *ptr++ = lsrv64(tmp, tmp, width_reg);
             
             // Move to destination register
@@ -2172,7 +2803,17 @@ static uint32_t *EMIT_BFEXTS(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr
 
             if (update_mask) {
                 uint8_t cc = RA_ModifyCC(&ptr);
+#ifdef __aarch64__
+#ifdef __aarch64__
                 *ptr++ = cmn_reg(31, dest, LSL, 0);
+#else
+            *ptr++ = lsl_immed(dest, dest, 0);
+            *ptr++ = cmn_reg(dest, 0);
+            *ptr++ = lsr_immed(dest, dest, 0);
+#endif
+#else
+            *ptr++ = cmn_reg(dest, 0);
+#endif
                 ptr = EMIT_GetNZ00(ptr, cc, &update_mask);
             }
         }
@@ -2191,7 +2832,11 @@ static uint32_t *EMIT_BFEXTS(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr
             *ptr++ = orr64_reg(tmp, tmp, src, LSL, offset);
 
             // Build up a mask
+#ifdef __aarch64__
             *ptr++ = and_immed(width_reg, width_reg, 5, 0);
+#else
+            *ptr++ = and_immed(width_reg, width_reg, ((1 << 5) - 1));
+#endif
             *ptr++ = cbnz(width_reg, 2);
             *ptr++ = mov_immed_u16(width_reg, 32, 0);
             *ptr++ = mov_immed_u16(mask_reg, 1, 0);
@@ -2204,7 +2849,15 @@ static uint32_t *EMIT_BFEXTS(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr
 
             // Arithmetic shift right 64-width bits
             *ptr++ = mov_immed_u16(mask_reg, 64, 0);
+#ifdef __aarch64__
+#ifdef __aarch64__
             *ptr++ = sub_reg(width_reg, mask_reg, width_reg, LSL, 0);
+#else
+            *ptr++ = sub_reg(width_reg, mask_reg, width_reg, 0);
+#endif
+#else
+            *ptr++ = sub_reg(width_reg, mask_reg, width_reg, 0);
+#endif
             *ptr++ = asrv64(tmp, tmp, width_reg);
             
             // Move to destination register
@@ -2229,7 +2882,11 @@ static uint32_t *EMIT_BFEXTS(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr
             uint8_t tmp = RA_AllocARMRegister(&ptr);
             uint8_t width = opcode2 & 31;
 
+#ifdef __aarch64__
             *ptr++ = and_immed(off_reg, off_reg, 5, 0);
+#else
+            *ptr++ = and_immed(off_reg, off_reg, ((1 << 5) - 1));
+#endif
 
             if (width == 0)
                 width = 32;
@@ -2270,10 +2927,18 @@ static uint32_t *EMIT_BFEXTS(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr
             uint8_t mask_reg = RA_AllocARMRegister(&ptr);
             uint8_t tmp = RA_AllocARMRegister(&ptr);
 
+#ifdef __aarch64__
             *ptr++ = and_immed(off_reg, off_reg, 5, 0);
+#else
+            *ptr++ = and_immed(off_reg, off_reg, ((1 << 5) - 1));
+#endif
 
             // Build up a mask
+#ifdef __aarch64__
             *ptr++ = and_immed(width_reg, width_reg, 5, 0);
+#else
+            *ptr++ = and_immed(width_reg, width_reg, ((1 << 5) - 1));
+#endif
             *ptr++ = cbnz(width_reg, 2);
             *ptr++ = mov_immed_u16(width_reg, 32, 0);
             *ptr++ = mov_immed_u16(mask_reg, 1, 0);
@@ -2291,7 +2956,15 @@ static uint32_t *EMIT_BFEXTS(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr
             
             // Arithmetic shift right 64-width bits
             *ptr++ = mov_immed_u16(off_reg, 64, 0);
+#ifdef __aarch64__
+#ifdef __aarch64__
             *ptr++ = sub_reg(width_reg, off_reg, width_reg, LSL, 0);
+#else
+            *ptr++ = sub_reg(width_reg, off_reg, width_reg, 0);
+#endif
+#else
+            *ptr++ = sub_reg(width_reg, off_reg, width_reg, 0);
+#endif
             *ptr++ = asrv64(tmp, tmp, width_reg);
             
             // Move to destination register
@@ -2362,7 +3035,11 @@ static uint32_t *EMIT_BFEXTS(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr
             }
 
             // Build up a mask
+#ifdef __aarch64__
             *ptr++ = and_immed(width_reg, width_reg, 5, 0);
+#else
+            *ptr++ = and_immed(width_reg, width_reg, ((1 << 5) - 1));
+#endif
             *ptr++ = cbnz(width_reg, 2);
             *ptr++ = mov_immed_u16(width_reg, 32, 0);
             *ptr++ = mov_immed_u16(mask_reg, 1, 0);
@@ -2375,7 +3052,15 @@ static uint32_t *EMIT_BFEXTS(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr
 
             // Arithmetic shift right 64-width bits
             *ptr++ = mov_immed_u16(mask_reg, 64, 0);
+#ifdef __aarch64__
+#ifdef __aarch64__
             *ptr++ = sub_reg(width_reg, mask_reg, width_reg, LSL, 0);
+#else
+            *ptr++ = sub_reg(width_reg, mask_reg, width_reg, 0);
+#endif
+#else
+            *ptr++ = sub_reg(width_reg, mask_reg, width_reg, 0);
+#endif
             *ptr++ = asrv64(tmp, tmp, width_reg);
             
             // Move to destination register
@@ -2404,8 +3089,17 @@ static uint32_t *EMIT_BFEXTS(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr
                 width = 32;
 
             // Adjust base register according to the offset
+#ifdef __aarch64__
             *ptr++ = add_reg(base, base, off_reg, ASR, 3);
+#else
+            *ptr++ = asr_immed(off_reg, off_reg, 3);
+            *ptr++ = add_reg(base, base, off_reg, 0);
+#endif
+#ifdef __aarch64__
             *ptr++ = and_immed(off_reg, off_reg, 3, 0);
+#else
+            *ptr++ = and_immed(off_reg, off_reg, ((1 << 3) - 1));
+#endif
 
             // Build up a mask
             *ptr++ = orr64_immed(mask_reg, 31, width, width, 1);
@@ -2443,11 +3137,24 @@ static uint32_t *EMIT_BFEXTS(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr
             uint8_t tmp = RA_AllocARMRegister(&ptr);
 
             // Adjust base register according to the offset
+#ifdef __aarch64__
             *ptr++ = add_reg(base, base, off_reg, ASR, 3);
+#else
+            *ptr++ = asr_immed(off_reg, off_reg, 3);
+            *ptr++ = add_reg(base, base, off_reg, 0);
+#endif
+#ifdef __aarch64__
             *ptr++ = and_immed(off_reg, off_reg, 3, 0);
+#else
+            *ptr++ = and_immed(off_reg, off_reg, ((1 << 3) - 1));
+#endif
 
             // Build up a mask
+#ifdef __aarch64__
             *ptr++ = and_immed(width_reg, width_reg, 5, 0);
+#else
+            *ptr++ = and_immed(width_reg, width_reg, ((1 << 5) - 1));
+#endif
             *ptr++ = cbnz(width_reg, 2);
             *ptr++ = mov_immed_u16(width_reg, 32, 0);
             *ptr++ = mov_immed_u16(mask_reg, 1, 0);
@@ -2464,7 +3171,15 @@ static uint32_t *EMIT_BFEXTS(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr
             
             // Arithmetic shift right 64-width bits
             *ptr++ = mov_immed_u16(off_reg, 64, 0);
+#ifdef __aarch64__
+#ifdef __aarch64__
             *ptr++ = sub_reg(width_reg, off_reg, width_reg, LSL, 0);
+#else
+            *ptr++ = sub_reg(width_reg, off_reg, width_reg, 0);
+#endif
+#else
+            *ptr++ = sub_reg(width_reg, off_reg, width_reg, 0);
+#endif
             *ptr++ = asrv64(tmp, tmp, width_reg);
             
             // Move to destination register
@@ -2543,7 +3258,17 @@ static uint32_t *EMIT_BFFFO_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_
             if (update_mask)
             {
                 uint8_t cc = RA_ModifyCC(&ptr);
+#ifdef __aarch64__
+#ifdef __aarch64__
                 *ptr++ = cmn_reg(31, src, LSL, 0);
+#else
+            *ptr++ = lsl_immed(src, src, 0);
+            *ptr++ = cmn_reg(src, 0);
+            *ptr++ = lsr_immed(src, src, 0);
+#endif
+#else
+            *ptr++ = cmn_reg(src, 0);
+#endif
                 *ptr++ = clz(dest, src);
                 ptr = EMIT_GetNZ00(ptr, cc, &update_mask);
             }
@@ -2564,7 +3289,11 @@ static uint32_t *EMIT_BFFFO_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_
         *ptr++ = orr64_reg(tmp, tmp, src, LSL, offset);
 
         // Build up a mask
+#ifdef __aarch64__
         *ptr++ = and_immed(width_reg, width_reg, 5, 0);
+#else
+            *ptr++ = and_immed(width_reg, width_reg, ((1 << 5) - 1));
+#endif
         *ptr++ = cbnz(width_reg, 2);
         *ptr++ = mov_immed_u16(width_reg, 32, 0);
         *ptr++ = mov_immed_u16(mask_reg, 1, 0);
@@ -2604,7 +3333,11 @@ static uint32_t *EMIT_BFFFO_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_
         uint8_t tmp = RA_AllocARMRegister(&ptr);
         uint8_t width = opcode2 & 31;
 
+#ifdef __aarch64__
         *ptr++ = and_immed(off_reg, off_orig, 5, 0);
+#else
+            *ptr++ = and_immed(off_reg, off_orig, ((1 << 5) - 1));
+#endif
 
         if (width == 0)
             width = 32;
@@ -2627,7 +3360,15 @@ static uint32_t *EMIT_BFFFO_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_
         *ptr++ = clz64(dest, tmp);
         
         // Add offset
+#ifdef __aarch64__
+#ifdef __aarch64__
         *ptr++ = add_reg(dest, dest, off_orig, LSL, 0);
+#else
+            *ptr++ = add_reg(dest, dest, off_orig, 0);
+#endif
+#else
+            *ptr++ = add_reg(dest, dest, off_orig, 0);
+#endif
 
         if (update_mask) {
             uint8_t cc = RA_ModifyCC(&ptr);
@@ -2650,10 +3391,18 @@ static uint32_t *EMIT_BFFFO_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_
         uint8_t mask_reg = RA_AllocARMRegister(&ptr);
         uint8_t tmp = RA_AllocARMRegister(&ptr);
 
+#ifdef __aarch64__
         *ptr++ = and_immed(off_reg, off_orig, 5, 0);
+#else
+            *ptr++ = and_immed(off_reg, off_orig, ((1 << 5) - 1));
+#endif
 
         // Build up a mask
+#ifdef __aarch64__
         *ptr++ = and_immed(width_reg, width_reg, 5, 0);
+#else
+            *ptr++ = and_immed(width_reg, width_reg, ((1 << 5) - 1));
+#endif
         *ptr++ = cbnz(width_reg, 2);
         *ptr++ = mov_immed_u16(width_reg, 32, 0);
         *ptr++ = mov_immed_u16(mask_reg, 1, 0);
@@ -2676,7 +3425,15 @@ static uint32_t *EMIT_BFFFO_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_
         *ptr++ = clz64(dest, tmp);
         
         // Add offset
+#ifdef __aarch64__
+#ifdef __aarch64__
         *ptr++ = add_reg(dest, dest, off_orig, LSL, 0);
+#else
+            *ptr++ = add_reg(dest, dest, off_orig, 0);
+#endif
+#else
+            *ptr++ = add_reg(dest, dest, off_orig, 0);
+#endif
 
         if (update_mask) {
             uint8_t cc = RA_ModifyCC(&ptr);
@@ -2763,7 +3520,11 @@ static uint32_t *EMIT_BFFFO(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
         }
 
         // Build up a mask
+#ifdef __aarch64__
         *ptr++ = and_immed(width_reg, width_reg, 5, 0);
+#else
+            *ptr++ = and_immed(width_reg, width_reg, ((1 << 5) - 1));
+#endif
         *ptr++ = cbnz(width_reg, 2);
         *ptr++ = mov_immed_u16(width_reg, 32, 0);
         *ptr++ = mov_immed_u16(mask_reg, 1, 0);
@@ -2807,8 +3568,17 @@ static uint32_t *EMIT_BFFFO(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
             width = 32;
 
         // Adjust base register according to the offset
+#ifdef __aarch64__
         *ptr++ = add_reg(base, base, off_reg, ASR, 3);
+#else
+            *ptr++ = asr_immed(off_reg, off_reg, 3);
+            *ptr++ = add_reg(base, base, off_reg, 0);
+#endif
+#ifdef __aarch64__
         *ptr++ = and_immed(off_reg, off_reg, 3, 0);
+#else
+            *ptr++ = and_immed(off_reg, off_reg, ((1 << 3) - 1));
+#endif
 
         // Build up a mask
         *ptr++ = orr64_immed(mask_reg, 31, width, width, 1);
@@ -2827,7 +3597,15 @@ static uint32_t *EMIT_BFFFO(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
         *ptr++ = clz64(dest, tmp);
         
         // Add offset
+#ifdef __aarch64__
+#ifdef __aarch64__
         *ptr++ = add_reg(dest, dest, off_orig, LSL, 0);
+#else
+            *ptr++ = add_reg(dest, dest, off_orig, 0);
+#endif
+#else
+            *ptr++ = add_reg(dest, dest, off_orig, 0);
+#endif
 
         if (update_mask) {
             uint8_t cc = RA_ModifyCC(&ptr);
@@ -2851,11 +3629,24 @@ static uint32_t *EMIT_BFFFO(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
         uint8_t tmp = RA_AllocARMRegister(&ptr);
 
         // Adjust base register according to the offset
+#ifdef __aarch64__
         *ptr++ = add_reg(base, base, off_reg, ASR, 3);
+#else
+            *ptr++ = asr_immed(off_reg, off_reg, 3);
+            *ptr++ = add_reg(base, base, off_reg, 0);
+#endif
+#ifdef __aarch64__
         *ptr++ = and_immed(off_reg, off_reg, 3, 0);
+#else
+            *ptr++ = and_immed(off_reg, off_reg, ((1 << 3) - 1));
+#endif
 
         // Build up a mask
+#ifdef __aarch64__
         *ptr++ = and_immed(width_reg, width_reg, 5, 0);
+#else
+            *ptr++ = and_immed(width_reg, width_reg, ((1 << 5) - 1));
+#endif
         *ptr++ = cbnz(width_reg, 2);
         *ptr++ = mov_immed_u16(width_reg, 32, 0);
         *ptr++ = mov_immed_u16(mask_reg, 1, 0);
@@ -2877,7 +3668,15 @@ static uint32_t *EMIT_BFFFO(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
         *ptr++ = clz64(dest, tmp);
         
         // Add offset
+#ifdef __aarch64__
+#ifdef __aarch64__
         *ptr++ = add_reg(dest, dest, off_orig, LSL, 0);
+#else
+            *ptr++ = add_reg(dest, dest, off_orig, 0);
+#endif
+#else
+            *ptr++ = add_reg(dest, dest, off_orig, 0);
+#endif
 
         if (update_mask) {
             uint8_t cc = RA_ModifyCC(&ptr);
@@ -2933,17 +3732,39 @@ static uint32_t *EMIT_BFCHG_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_
                     
                 *ptr++ = ror(tmp, src, 31 & (32 - offset));
                 if (width != 32)
+#ifdef __aarch64__
                     *ptr++ = ands_immed(31, tmp, width, width);
+#else
+            *ptr++ = ands_immed(31, tmp, ((1 << width) - 1));
+#endif
                 else
+#ifdef __aarch64__
+#ifdef __aarch64__
                     *ptr++ = cmn_reg(31, tmp, LSL, 0);
+#else
+            *ptr++ = lsl_immed(tmp, tmp, 0);
+            *ptr++ = cmn_reg(tmp, 0);
+            *ptr++ = lsr_immed(tmp, tmp, 0);
+#endif
+#else
+            *ptr++ = cmn_reg(tmp, 0);
+#endif
 
                 ptr = EMIT_GetNZ00(ptr, cc, &update_mask);
             }
             if (width != 32) {
+#ifdef __aarch64__
                 *ptr++ = eor_immed(src, src, width, 31 & (width + offset));
+#else
+                *ptr++ = eor_immed(src, src, ((1 << width) - 1));
+#endif
             }
             else {
+#ifdef __aarch64__
                 *ptr++ = mvn_reg(src, src, LSL, 0);
+#else
+            *ptr++ = mvn_reg(src, src, 0);
+#endif
             }
 
             RA_FreeARMRegister(&ptr, tmp);
@@ -2953,12 +3774,26 @@ static uint32_t *EMIT_BFCHG_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_
             if (update_mask)
             {
                 uint8_t cc = RA_ModifyCC(&ptr);
+#ifdef __aarch64__
+#ifdef __aarch64__
                 *ptr++ = cmn_reg(31, src, LSL, 0);
+#else
+            *ptr++ = lsl_immed(src, src, 0);
+            *ptr++ = cmn_reg(src, 0);
+            *ptr++ = lsr_immed(src, src, 0);
+#endif
+#else
+            *ptr++ = cmn_reg(src, 0);
+#endif
 
                 ptr = EMIT_GetNZ00(ptr, cc, &update_mask);
             }
 
+#ifdef __aarch64__
             *ptr++ = mvn_reg(src, src, LSL, 0);
+#else
+            *ptr++ = mvn_reg(src, src, 0);
+#endif
         }
     }
 
@@ -2971,7 +3806,11 @@ static uint32_t *EMIT_BFCHG_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_
         uint8_t offset = (opcode2 >> 6) & 31;
 
         // Build up a mask
+#ifdef __aarch64__
         *ptr++ = and_immed(width_reg, width_reg, 5, 0);
+#else
+            *ptr++ = and_immed(width_reg, width_reg, ((1 << 5) - 1));
+#endif
         *ptr++ = cbnz(width_reg, 2);
         *ptr++ = mov_immed_u16(width_reg, 32, 0);
         *ptr++ = mov_immed_u16(mask_reg, 1, 0);
@@ -2989,11 +3828,27 @@ static uint32_t *EMIT_BFCHG_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_
             {
                 *ptr++ = ror(testreg, src, 31 & (32 - offset));
                 // Mask the bitfield, update condition codes
+#ifdef __aarch64__
+#ifdef __aarch64__
                 *ptr++ = ands_reg(31, testreg, mask_reg, LSL, 0);
+#else
+            *ptr++ = ands_reg(31, testreg, mask_reg, 0);
+#endif
+#else
+            *ptr++ = ands_reg(31, testreg, mask_reg, 0);
+#endif
             }
             else
             {
+#ifdef __aarch64__
+#ifdef __aarch64__
                 *ptr++ = ands_reg(31, src, mask_reg, LSL, 0);
+#else
+            *ptr++ = ands_reg(31, src, mask_reg, 0);
+#endif
+#else
+            *ptr++ = ands_reg(31, src, mask_reg, 0);
+#endif
             }
             ptr = EMIT_GetNZ00(ptr, cc, &update_mask);
 
@@ -3002,9 +3857,21 @@ static uint32_t *EMIT_BFCHG_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_
 
         // Set the mask bits to zero
         if (offset != 0)
+#ifdef __aarch64__
             *ptr++ = eor_reg(src, src, mask_reg, ROR, offset);
+#else
+            *ptr++ = eor_reg(src, src, mask_reg, 0);
+#endif
         else
+#ifdef __aarch64__
+#ifdef __aarch64__
             *ptr++ = eor_reg(src, src, mask_reg, LSL, 0);
+#else
+            *ptr++ = eor_reg(src, src, mask_reg, 0);
+#endif
+#else
+            *ptr++ = eor_reg(src, src, mask_reg, 0);
+#endif
        
         RA_FreeARMRegister(&ptr, tmp);
         RA_FreeARMRegister(&ptr, width_reg);
@@ -3019,14 +3886,22 @@ static uint32_t *EMIT_BFCHG_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_
         uint8_t tmp = RA_AllocARMRegister(&ptr);
         uint8_t width = opcode2 & 31;
 
+#ifdef __aarch64__
         *ptr++ = and_immed(off_reg, off_reg, 5, 0);
+#else
+            *ptr++ = and_immed(off_reg, off_reg, ((1 << 5) - 1));
+#endif
 
         if (width == 0)
             width = 32;
 
         // Build mask
         if (width != 32) {
+#ifdef __aarch64__
             *ptr++ = orr_immed(mask_reg, 31, width, width);
+#else
+            *ptr++ = orr_immed(mask_reg, 31, ((1 << width) - 1));
+#endif
         }
 
         // Update condition codes if necessary
@@ -3036,14 +3911,36 @@ static uint32_t *EMIT_BFCHG_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_
             uint8_t cc = RA_ModifyCC(&ptr);
 
             *ptr++ = mov_immed_u16(testreg, 32, 0);
+#ifdef __aarch64__
+#ifdef __aarch64__
             *ptr++ = sub_reg(testreg, testreg, off_reg, LSL, 0);
+#else
+            *ptr++ = sub_reg(testreg, testreg, off_reg, 0);
+#endif
+#else
+            *ptr++ = sub_reg(testreg, testreg, off_reg, 0);
+#endif
             *ptr++ = rorv(testreg, src, testreg);
 
             if (width != 32) {
+#ifdef __aarch64__
                 *ptr++ = ands_immed(31, testreg, width, width);
+#else
+            *ptr++ = ands_immed(31, testreg, ((1 << width) - 1));
+#endif
             }
             else {
+#ifdef __aarch64__
+#ifdef __aarch64__
                 *ptr++ = cmn_reg(31, testreg, LSL, 0);
+#else
+            *ptr++ = lsl_immed(testreg, testreg, 0);
+            *ptr++ = cmn_reg(testreg, 0);
+            *ptr++ = lsr_immed(testreg, testreg, 0);
+#endif
+#else
+            *ptr++ = cmn_reg(testreg, 0);
+#endif
             }
 
             ptr = EMIT_GetNZ00(ptr, cc, &update_mask);
@@ -3056,10 +3953,22 @@ static uint32_t *EMIT_BFCHG_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_
             *ptr++ = rorv(mask_reg, mask_reg, off_reg);
 
             // Clear bitfield
+#ifdef __aarch64__
+#ifdef __aarch64__
             *ptr++ = eor_reg(src, src, mask_reg, LSL, 0);
+#else
+            *ptr++ = eor_reg(src, src, mask_reg, 0);
+#endif
+#else
+            *ptr++ = eor_reg(src, src, mask_reg, 0);
+#endif
         }
         else {
+#ifdef __aarch64__
             *ptr++ = mvn_reg(src, src, LSL, 0);
+#else
+            *ptr++ = mvn_reg(src, src, 0);
+#endif
         }
 
         RA_FreeARMRegister(&ptr, tmp);
@@ -3075,10 +3984,18 @@ static uint32_t *EMIT_BFCHG_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_
         uint8_t mask_reg = RA_AllocARMRegister(&ptr);
         uint8_t tmp = RA_AllocARMRegister(&ptr);
 
+#ifdef __aarch64__
         *ptr++ = and_immed(off_reg, off_reg, 5, 0);
+#else
+            *ptr++ = and_immed(off_reg, off_reg, ((1 << 5) - 1));
+#endif
 
         // Build up a mask
+#ifdef __aarch64__
         *ptr++ = and_immed(width_reg, width_reg, 5, 0);
+#else
+            *ptr++ = and_immed(width_reg, width_reg, ((1 << 5) - 1));
+#endif
         *ptr++ = cbnz(width_reg, 2);
         *ptr++ = mov_immed_u16(width_reg, 32, 0);
         *ptr++ = mov_immed_u16(mask_reg, 1, 0);
@@ -3093,10 +4010,26 @@ static uint32_t *EMIT_BFCHG_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_
             uint8_t cc = RA_ModifyCC(&ptr);
 
             *ptr++ = mov_immed_u16(testreg, 32, 0);
+#ifdef __aarch64__
+#ifdef __aarch64__
             *ptr++ = sub_reg(testreg, testreg, off_reg, LSL, 0);
+#else
+            *ptr++ = sub_reg(testreg, testreg, off_reg, 0);
+#endif
+#else
+            *ptr++ = sub_reg(testreg, testreg, off_reg, 0);
+#endif
             *ptr++ = rorv(testreg, src, testreg);
 
+#ifdef __aarch64__
+#ifdef __aarch64__
             *ptr++ = ands_reg(31, testreg, mask_reg, LSL, 0);
+#else
+            *ptr++ = ands_reg(31, testreg, mask_reg, 0);
+#endif
+#else
+            *ptr++ = ands_reg(31, testreg, mask_reg, 0);
+#endif
 
             ptr = EMIT_GetNZ00(ptr, cc, &update_mask);
 
@@ -3107,7 +4040,15 @@ static uint32_t *EMIT_BFCHG_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_
         *ptr++ = rorv(mask_reg, mask_reg, off_reg);
 
         // Set bits in field to zeros
+#ifdef __aarch64__
+#ifdef __aarch64__
         *ptr++ = eor_reg(src, src, mask_reg, LSL, 0);
+#else
+            *ptr++ = eor_reg(src, src, mask_reg, 0);
+#endif
+#else
+            *ptr++ = eor_reg(src, src, mask_reg, 0);
+#endif
 
         RA_FreeARMRegister(&ptr, tmp);
         RA_FreeARMRegister(&ptr, mask_reg);
@@ -3185,7 +4126,11 @@ static uint32_t *EMIT_BFCHG(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
         *ptr++ = ldr64_offset(base, tmp, 0);
 
         // Build up a mask
+#ifdef __aarch64__
         *ptr++ = and_immed(width_reg, width_reg, 5, 0);
+#else
+            *ptr++ = and_immed(width_reg, width_reg, ((1 << 5) - 1));
+#endif
         *ptr++ = cbnz(width_reg, 2);
         *ptr++ = mov_immed_u16(width_reg, 32, 0);
         *ptr++ = mov_immed_u16(mask_reg, 1, 0);
@@ -3242,8 +4187,17 @@ static uint32_t *EMIT_BFCHG(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
             width = 32;
 
         // Adjust base register according to the offset
+#ifdef __aarch64__
         *ptr++ = add_reg(base, base, off_reg, ASR, 3);
+#else
+            *ptr++ = asr_immed(off_reg, off_reg, 3);
+            *ptr++ = add_reg(base, base, off_reg, 0);
+#endif
+#ifdef __aarch64__
         *ptr++ = and_immed(off_reg, off_reg, 3, 0);
+#else
+            *ptr++ = and_immed(off_reg, off_reg, ((1 << 3) - 1));
+#endif
 
         // Build up a mask
         *ptr++ = orr64_immed(mask_reg, 31, width, width, 1);
@@ -3290,11 +4244,24 @@ static uint32_t *EMIT_BFCHG(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
         uint8_t tmp = RA_AllocARMRegister(&ptr);
 
         // Adjust base register according to the offset
+#ifdef __aarch64__
         *ptr++ = add_reg(base, base, off_reg, ASR, 3);
+#else
+            *ptr++ = asr_immed(off_reg, off_reg, 3);
+            *ptr++ = add_reg(base, base, off_reg, 0);
+#endif
+#ifdef __aarch64__
         *ptr++ = and_immed(off_reg, off_reg, 3, 0);
+#else
+            *ptr++ = and_immed(off_reg, off_reg, ((1 << 3) - 1));
+#endif
 
         // Build up a mask
+#ifdef __aarch64__
         *ptr++ = and_immed(width_reg, width_reg, 5, 0);
+#else
+            *ptr++ = and_immed(width_reg, width_reg, ((1 << 5) - 1));
+#endif
         *ptr++ = cbnz(width_reg, 2);
         *ptr++ = mov_immed_u16(width_reg, 32, 0);
         *ptr++ = mov_immed_u16(mask_reg, 1, 0);
@@ -3378,14 +4345,32 @@ static uint32_t *EMIT_BFSET_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_
                     
                 *ptr++ = ror(tmp, src, 31 & (32 - offset));
                 if (width != 32)
+#ifdef __aarch64__
                     *ptr++ = ands_immed(31, tmp, width, width);
+#else
+            *ptr++ = ands_immed(31, tmp, ((1 << width) - 1));
+#endif
                 else
+#ifdef __aarch64__
+#ifdef __aarch64__
                     *ptr++ = cmn_reg(31, tmp, LSL, 0);
+#else
+            *ptr++ = lsl_immed(tmp, tmp, 0);
+            *ptr++ = cmn_reg(tmp, 0);
+            *ptr++ = lsr_immed(tmp, tmp, 0);
+#endif
+#else
+            *ptr++ = cmn_reg(tmp, 0);
+#endif
 
                 ptr = EMIT_GetNZ00(ptr, cc, &update_mask);
             }
             if (width != 32) {
+#ifdef __aarch64__
                 *ptr++ = orr_immed(src, src, width, 31 & (width + offset));
+#else
+                *ptr++ = orr_immed(src, src, ((1 << width) - 1));
+#endif
             }
             else {
                 *ptr++ = movn_immed_u16(src, 0, 0);    
@@ -3398,7 +4383,17 @@ static uint32_t *EMIT_BFSET_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_
             if (update_mask)
             {
                 uint8_t cc = RA_ModifyCC(&ptr);
+#ifdef __aarch64__
+#ifdef __aarch64__
                 *ptr++ = cmn_reg(31, src, LSL, 0);
+#else
+            *ptr++ = lsl_immed(src, src, 0);
+            *ptr++ = cmn_reg(src, 0);
+            *ptr++ = lsr_immed(src, src, 0);
+#endif
+#else
+            *ptr++ = cmn_reg(src, 0);
+#endif
 
                 ptr = EMIT_GetNZ00(ptr, cc, &update_mask);
             }
@@ -3416,7 +4411,11 @@ static uint32_t *EMIT_BFSET_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_
         uint8_t offset = (opcode2 >> 6) & 31;
 
         // Build up a mask
+#ifdef __aarch64__
         *ptr++ = and_immed(width_reg, width_reg, 5, 0);
+#else
+            *ptr++ = and_immed(width_reg, width_reg, ((1 << 5) - 1));
+#endif
         *ptr++ = cbnz(width_reg, 2);
         *ptr++ = mov_immed_u16(width_reg, 32, 0);
         *ptr++ = mov_immed_u16(mask_reg, 1, 0);
@@ -3434,11 +4433,27 @@ static uint32_t *EMIT_BFSET_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_
             {
                 *ptr++ = ror(testreg, src, 31 & (32 - offset));
                 // Mask the bitfield, update condition codes
+#ifdef __aarch64__
+#ifdef __aarch64__
                 *ptr++ = ands_reg(31, testreg, mask_reg, LSL, 0);
+#else
+            *ptr++ = ands_reg(31, testreg, mask_reg, 0);
+#endif
+#else
+            *ptr++ = ands_reg(31, testreg, mask_reg, 0);
+#endif
             }
             else
             {
+#ifdef __aarch64__
+#ifdef __aarch64__
                 *ptr++ = ands_reg(31, src, mask_reg, LSL, 0);
+#else
+            *ptr++ = ands_reg(31, src, mask_reg, 0);
+#endif
+#else
+            *ptr++ = ands_reg(31, src, mask_reg, 0);
+#endif
             }
             ptr = EMIT_GetNZ00(ptr, cc, &update_mask);
 
@@ -3447,9 +4462,21 @@ static uint32_t *EMIT_BFSET_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_
 
         // Set the mask bits to one
         if (offset != 0)
+#ifdef __aarch64__
             *ptr++ = orr_reg(src, src, mask_reg, ROR, offset);
+#else
+            *ptr++ = orr_reg(src, src, mask_reg, 0);
+#endif
         else
+#ifdef __aarch64__
+#ifdef __aarch64__
             *ptr++ = orr_reg(src, src, mask_reg, LSL, 0);
+#else
+            *ptr++ = orr_reg(src, src, mask_reg, 0);
+#endif
+#else
+            *ptr++ = orr_reg(src, src, mask_reg, 0);
+#endif
        
         RA_FreeARMRegister(&ptr, tmp);
         RA_FreeARMRegister(&ptr, width_reg);
@@ -3464,14 +4491,22 @@ static uint32_t *EMIT_BFSET_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_
         uint8_t tmp = RA_AllocARMRegister(&ptr);
         uint8_t width = opcode2 & 31;
 
+#ifdef __aarch64__
         *ptr++ = and_immed(off_reg, off_reg, 5, 0);
+#else
+            *ptr++ = and_immed(off_reg, off_reg, ((1 << 5) - 1));
+#endif
 
         if (width == 0)
             width = 32;
 
         // Build mask
         if (width != 32) {
+#ifdef __aarch64__
             *ptr++ = orr_immed(mask_reg, 31, width, width);
+#else
+            *ptr++ = orr_immed(mask_reg, 31, ((1 << width) - 1));
+#endif
         }
 
         // Update condition codes if necessary
@@ -3481,14 +4516,36 @@ static uint32_t *EMIT_BFSET_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_
             uint8_t cc = RA_ModifyCC(&ptr);
 
             *ptr++ = mov_immed_u16(testreg, 32, 0);
+#ifdef __aarch64__
+#ifdef __aarch64__
             *ptr++ = sub_reg(testreg, testreg, off_reg, LSL, 0);
+#else
+            *ptr++ = sub_reg(testreg, testreg, off_reg, 0);
+#endif
+#else
+            *ptr++ = sub_reg(testreg, testreg, off_reg, 0);
+#endif
             *ptr++ = rorv(testreg, src, testreg);
 
             if (width != 32) {
+#ifdef __aarch64__
                 *ptr++ = ands_immed(31, testreg, width, width);
+#else
+            *ptr++ = ands_immed(31, testreg, ((1 << width) - 1));
+#endif
             }
             else {
+#ifdef __aarch64__
+#ifdef __aarch64__
                 *ptr++ = cmn_reg(31, testreg, LSL, 0);
+#else
+            *ptr++ = lsl_immed(testreg, testreg, 0);
+            *ptr++ = cmn_reg(testreg, 0);
+            *ptr++ = lsr_immed(testreg, testreg, 0);
+#endif
+#else
+            *ptr++ = cmn_reg(testreg, 0);
+#endif
             }
 
             ptr = EMIT_GetNZ00(ptr, cc, &update_mask);
@@ -3501,7 +4558,15 @@ static uint32_t *EMIT_BFSET_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_
             *ptr++ = rorv(mask_reg, mask_reg, off_reg);
 
             // Or with source
+#ifdef __aarch64__
+#ifdef __aarch64__
             *ptr++ = orr_reg(src, src, mask_reg, LSL, 0);
+#else
+            *ptr++ = orr_reg(src, src, mask_reg, 0);
+#endif
+#else
+            *ptr++ = orr_reg(src, src, mask_reg, 0);
+#endif
         }
         else {
             *ptr++ = movn_immed_u16(src, 0, 0);
@@ -3520,10 +4585,18 @@ static uint32_t *EMIT_BFSET_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_
         uint8_t mask_reg = RA_AllocARMRegister(&ptr);
         uint8_t tmp = RA_AllocARMRegister(&ptr);
 
+#ifdef __aarch64__
         *ptr++ = and_immed(off_reg, off_reg, 5, 0);
+#else
+            *ptr++ = and_immed(off_reg, off_reg, ((1 << 5) - 1));
+#endif
 
         // Build up a mask
+#ifdef __aarch64__
         *ptr++ = and_immed(width_reg, width_reg, 5, 0);
+#else
+            *ptr++ = and_immed(width_reg, width_reg, ((1 << 5) - 1));
+#endif
         *ptr++ = cbnz(width_reg, 2);
         *ptr++ = mov_immed_u16(width_reg, 32, 0);
         *ptr++ = mov_immed_u16(mask_reg, 1, 0);
@@ -3538,10 +4611,26 @@ static uint32_t *EMIT_BFSET_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_
             uint8_t cc = RA_ModifyCC(&ptr);
 
             *ptr++ = mov_immed_u16(testreg, 32, 0);
+#ifdef __aarch64__
+#ifdef __aarch64__
             *ptr++ = sub_reg(testreg, testreg, off_reg, LSL, 0);
+#else
+            *ptr++ = sub_reg(testreg, testreg, off_reg, 0);
+#endif
+#else
+            *ptr++ = sub_reg(testreg, testreg, off_reg, 0);
+#endif
             *ptr++ = rorv(testreg, src, testreg);
 
+#ifdef __aarch64__
+#ifdef __aarch64__
             *ptr++ = ands_reg(31, testreg, mask_reg, LSL, 0);
+#else
+            *ptr++ = ands_reg(31, testreg, mask_reg, 0);
+#endif
+#else
+            *ptr++ = ands_reg(31, testreg, mask_reg, 0);
+#endif
 
             ptr = EMIT_GetNZ00(ptr, cc, &update_mask);
 
@@ -3552,7 +4641,15 @@ static uint32_t *EMIT_BFSET_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_
         *ptr++ = rorv(mask_reg, mask_reg, off_reg);
 
         // Set bits in field to ones
+#ifdef __aarch64__
+#ifdef __aarch64__
         *ptr++ = orr_reg(src, src, mask_reg, LSL, 0);
+#else
+            *ptr++ = orr_reg(src, src, mask_reg, 0);
+#endif
+#else
+            *ptr++ = orr_reg(src, src, mask_reg, 0);
+#endif
 
         RA_FreeARMRegister(&ptr, tmp);
         RA_FreeARMRegister(&ptr, mask_reg);
@@ -3630,7 +4727,11 @@ static uint32_t *EMIT_BFSET(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
         *ptr++ = ldr64_offset(base, tmp, 0);
 
         // Build up a mask
+#ifdef __aarch64__
         *ptr++ = and_immed(width_reg, width_reg, 5, 0);
+#else
+            *ptr++ = and_immed(width_reg, width_reg, ((1 << 5) - 1));
+#endif
         *ptr++ = cbnz(width_reg, 2);
         *ptr++ = mov_immed_u16(width_reg, 32, 0);
         *ptr++ = mov_immed_u16(mask_reg, 1, 0);
@@ -3687,8 +4788,17 @@ static uint32_t *EMIT_BFSET(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
             width = 32;
 
         // Adjust base register according to the offset
+#ifdef __aarch64__
         *ptr++ = add_reg(base, base, off_reg, ASR, 3);
+#else
+            *ptr++ = asr_immed(off_reg, off_reg, 3);
+            *ptr++ = add_reg(base, base, off_reg, 0);
+#endif
+#ifdef __aarch64__
         *ptr++ = and_immed(off_reg, off_reg, 3, 0);
+#else
+            *ptr++ = and_immed(off_reg, off_reg, ((1 << 3) - 1));
+#endif
 
         // Build up a mask
         *ptr++ = orr64_immed(mask_reg, 31, width, width, 1);
@@ -3735,11 +4845,24 @@ static uint32_t *EMIT_BFSET(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
         uint8_t tmp = RA_AllocARMRegister(&ptr);
 
         // Adjust base register according to the offset
+#ifdef __aarch64__
         *ptr++ = add_reg(base, base, off_reg, ASR, 3);
+#else
+            *ptr++ = asr_immed(off_reg, off_reg, 3);
+            *ptr++ = add_reg(base, base, off_reg, 0);
+#endif
+#ifdef __aarch64__
         *ptr++ = and_immed(off_reg, off_reg, 3, 0);
+#else
+            *ptr++ = and_immed(off_reg, off_reg, ((1 << 3) - 1));
+#endif
 
         // Build up a mask
+#ifdef __aarch64__
         *ptr++ = and_immed(width_reg, width_reg, 5, 0);
+#else
+            *ptr++ = and_immed(width_reg, width_reg, ((1 << 5) - 1));
+#endif
         *ptr++ = cbnz(width_reg, 2);
         *ptr++ = mov_immed_u16(width_reg, 32, 0);
         *ptr++ = mov_immed_u16(mask_reg, 1, 0);
@@ -3823,14 +4946,32 @@ static uint32_t *EMIT_BFCLR_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_
                     
                 *ptr++ = ror(tmp, src, 31 & (32 - offset));
                 if (width != 32)
+#ifdef __aarch64__
                     *ptr++ = ands_immed(31, tmp, width, width);
+#else
+            *ptr++ = ands_immed(31, tmp, ((1 << width) - 1));
+#endif
                 else
+#ifdef __aarch64__
+#ifdef __aarch64__
                     *ptr++ = cmn_reg(31, tmp, LSL, 0);
+#else
+            *ptr++ = lsl_immed(tmp, tmp, 0);
+            *ptr++ = cmn_reg(tmp, 0);
+            *ptr++ = lsr_immed(tmp, tmp, 0);
+#endif
+#else
+            *ptr++ = cmn_reg(tmp, 0);
+#endif
 
                 ptr = EMIT_GetNZ00(ptr, cc, &update_mask);
             }
             if (width != 32) {
+#ifdef __aarch64__
                 *ptr++ = bic_immed(src, src, width, 31 & (width + offset));
+#else
+                *ptr++ = bic_immed(src, src, ((1 << width) - 1));
+#endif
             }
             else {
                 *ptr++ = mov_immed_u16(src, 0, 0);    
@@ -3843,7 +4984,17 @@ static uint32_t *EMIT_BFCLR_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_
             if (update_mask)
             {
                 uint8_t cc = RA_ModifyCC(&ptr);
+#ifdef __aarch64__
+#ifdef __aarch64__
                 *ptr++ = cmn_reg(31, src, LSL, 0);
+#else
+            *ptr++ = lsl_immed(src, src, 0);
+            *ptr++ = cmn_reg(src, 0);
+            *ptr++ = lsr_immed(src, src, 0);
+#endif
+#else
+            *ptr++ = cmn_reg(src, 0);
+#endif
 
                 ptr = EMIT_GetNZ00(ptr, cc, &update_mask);
             }
@@ -3861,7 +5012,11 @@ static uint32_t *EMIT_BFCLR_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_
         uint8_t offset = (opcode2 >> 6) & 31;
 
         // Build up a mask
+#ifdef __aarch64__
         *ptr++ = and_immed(width_reg, width_reg, 5, 0);
+#else
+            *ptr++ = and_immed(width_reg, width_reg, ((1 << 5) - 1));
+#endif
         *ptr++ = cbnz(width_reg, 2);
         *ptr++ = mov_immed_u16(width_reg, 32, 0);
         *ptr++ = mov_immed_u16(mask_reg, 1, 0);
@@ -3879,11 +5034,27 @@ static uint32_t *EMIT_BFCLR_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_
             {
                 *ptr++ = ror(testreg, src, 31 & (32 - offset));
                 // Mask the bitfield, update condition codes
+#ifdef __aarch64__
+#ifdef __aarch64__
                 *ptr++ = ands_reg(31, testreg, mask_reg, LSL, 0);
+#else
+            *ptr++ = ands_reg(31, testreg, mask_reg, 0);
+#endif
+#else
+            *ptr++ = ands_reg(31, testreg, mask_reg, 0);
+#endif
             }
             else
             {
+#ifdef __aarch64__
+#ifdef __aarch64__
                 *ptr++ = ands_reg(31, src, mask_reg, LSL, 0);
+#else
+            *ptr++ = ands_reg(31, src, mask_reg, 0);
+#endif
+#else
+            *ptr++ = ands_reg(31, src, mask_reg, 0);
+#endif
             }
             ptr = EMIT_GetNZ00(ptr, cc, &update_mask);
 
@@ -3892,9 +5063,21 @@ static uint32_t *EMIT_BFCLR_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_
 
         // Set the mask bits to zero
         if (offset != 0)
+#ifdef __aarch64__
             *ptr++ = bic_reg(src, src, mask_reg, ROR, offset);
+#else
+            *ptr++ = bic_reg(src, src, mask_reg);
+#endif
         else
+#ifdef __aarch64__
+#ifdef __aarch64__
             *ptr++ = bic_reg(src, src, mask_reg, LSL, 0);
+#else
+            *ptr++ = bic_reg(src, src, mask_reg, 0);
+#endif
+#else
+            *ptr++ = bic_reg(src, src, mask_reg);
+#endif
        
         RA_FreeARMRegister(&ptr, tmp);
         RA_FreeARMRegister(&ptr, width_reg);
@@ -3909,14 +5092,22 @@ static uint32_t *EMIT_BFCLR_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_
         uint8_t tmp = RA_AllocARMRegister(&ptr);
         uint8_t width = opcode2 & 31;
 
+#ifdef __aarch64__
         *ptr++ = and_immed(off_reg, off_reg, 5, 0);
+#else
+            *ptr++ = and_immed(off_reg, off_reg, ((1 << 5) - 1));
+#endif
 
         if (width == 0)
             width = 32;
 
         // Build mask
         if (width != 32) {
+#ifdef __aarch64__
             *ptr++ = orr_immed(mask_reg, 31, width, width);
+#else
+            *ptr++ = orr_immed(mask_reg, 31, ((1 << width) - 1));
+#endif
         }
 
         // Update condition codes if necessary
@@ -3926,14 +5117,36 @@ static uint32_t *EMIT_BFCLR_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_
             uint8_t cc = RA_ModifyCC(&ptr);
 
             *ptr++ = mov_immed_u16(testreg, 32, 0);
+#ifdef __aarch64__
+#ifdef __aarch64__
             *ptr++ = sub_reg(testreg, testreg, off_reg, LSL, 0);
+#else
+            *ptr++ = sub_reg(testreg, testreg, off_reg, 0);
+#endif
+#else
+            *ptr++ = sub_reg(testreg, testreg, off_reg, 0);
+#endif
             *ptr++ = rorv(testreg, src, testreg);
 
             if (width != 32) {
+#ifdef __aarch64__
                 *ptr++ = ands_immed(31, testreg, width, width);
+#else
+            *ptr++ = ands_immed(31, testreg, ((1 << width) - 1));
+#endif
             }
             else {
+#ifdef __aarch64__
+#ifdef __aarch64__
                 *ptr++ = cmn_reg(31, testreg, LSL, 0);
+#else
+            *ptr++ = lsl_immed(testreg, testreg, 0);
+            *ptr++ = cmn_reg(testreg, 0);
+            *ptr++ = lsr_immed(testreg, testreg, 0);
+#endif
+#else
+            *ptr++ = cmn_reg(testreg, 0);
+#endif
             }
 
             ptr = EMIT_GetNZ00(ptr, cc, &update_mask);
@@ -3946,7 +5159,15 @@ static uint32_t *EMIT_BFCLR_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_
             *ptr++ = rorv(mask_reg, mask_reg, off_reg);
 
             // Clear bitfield
+#ifdef __aarch64__
+#ifdef __aarch64__
             *ptr++ = bic_reg(src, src, mask_reg, LSL, 0);
+#else
+            *ptr++ = bic_reg(src, src, mask_reg, 0);
+#endif
+#else
+            *ptr++ = bic_reg(src, src, mask_reg);
+#endif
         }
         else {
             *ptr++ = mov_immed_u16(src, 0, 0);
@@ -3965,10 +5186,18 @@ static uint32_t *EMIT_BFCLR_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_
         uint8_t mask_reg = RA_AllocARMRegister(&ptr);
         uint8_t tmp = RA_AllocARMRegister(&ptr);
 
+#ifdef __aarch64__
         *ptr++ = and_immed(off_reg, off_reg, 5, 0);
+#else
+            *ptr++ = and_immed(off_reg, off_reg, ((1 << 5) - 1));
+#endif
 
         // Build up a mask
+#ifdef __aarch64__
         *ptr++ = and_immed(width_reg, width_reg, 5, 0);
+#else
+            *ptr++ = and_immed(width_reg, width_reg, ((1 << 5) - 1));
+#endif
         *ptr++ = cbnz(width_reg, 2);
         *ptr++ = mov_immed_u16(width_reg, 32, 0);
         *ptr++ = mov_immed_u16(mask_reg, 1, 0);
@@ -3983,10 +5212,26 @@ static uint32_t *EMIT_BFCLR_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_
             uint8_t cc = RA_ModifyCC(&ptr);
 
             *ptr++ = mov_immed_u16(testreg, 32, 0);
+#ifdef __aarch64__
+#ifdef __aarch64__
             *ptr++ = sub_reg(testreg, testreg, off_reg, LSL, 0);
+#else
+            *ptr++ = sub_reg(testreg, testreg, off_reg, 0);
+#endif
+#else
+            *ptr++ = sub_reg(testreg, testreg, off_reg, 0);
+#endif
             *ptr++ = rorv(testreg, src, testreg);
 
+#ifdef __aarch64__
+#ifdef __aarch64__
             *ptr++ = ands_reg(31, testreg, mask_reg, LSL, 0);
+#else
+            *ptr++ = ands_reg(31, testreg, mask_reg, 0);
+#endif
+#else
+            *ptr++ = ands_reg(31, testreg, mask_reg, 0);
+#endif
 
             ptr = EMIT_GetNZ00(ptr, cc, &update_mask);
 
@@ -3997,7 +5242,15 @@ static uint32_t *EMIT_BFCLR_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_
         *ptr++ = rorv(mask_reg, mask_reg, off_reg);
 
         // Set bits in field to zeros
+#ifdef __aarch64__
+#ifdef __aarch64__
         *ptr++ = bic_reg(src, src, mask_reg, LSL, 0);
+#else
+            *ptr++ = bic_reg(src, src, mask_reg, 0);
+#endif
+#else
+            *ptr++ = bic_reg(src, src, mask_reg);
+#endif
 
         RA_FreeARMRegister(&ptr, tmp);
         RA_FreeARMRegister(&ptr, mask_reg);
@@ -4075,7 +5328,11 @@ static uint32_t *EMIT_BFCLR(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
         *ptr++ = ldr64_offset(base, tmp, 0);
 
         // Build up a mask
+#ifdef __aarch64__
         *ptr++ = and_immed(width_reg, width_reg, 5, 0);
+#else
+            *ptr++ = and_immed(width_reg, width_reg, ((1 << 5) - 1));
+#endif
         *ptr++ = cbnz(width_reg, 2);
         *ptr++ = mov_immed_u16(width_reg, 32, 0);
         *ptr++ = mov_immed_u16(mask_reg, 1, 0);
@@ -4132,8 +5389,17 @@ static uint32_t *EMIT_BFCLR(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
             width = 32;
 
         // Adjust base register according to the offset
+#ifdef __aarch64__
         *ptr++ = add_reg(base, base, off_reg, ASR, 3);
+#else
+            *ptr++ = asr_immed(off_reg, off_reg, 3);
+            *ptr++ = add_reg(base, base, off_reg, 0);
+#endif
+#ifdef __aarch64__
         *ptr++ = and_immed(off_reg, off_reg, 3, 0);
+#else
+            *ptr++ = and_immed(off_reg, off_reg, ((1 << 3) - 1));
+#endif
 
         // Build up a mask
         *ptr++ = orr64_immed(mask_reg, 31, width, width, 1);
@@ -4180,11 +5446,24 @@ static uint32_t *EMIT_BFCLR(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
         uint8_t tmp = RA_AllocARMRegister(&ptr);
 
         // Adjust base register according to the offset
+#ifdef __aarch64__
         *ptr++ = add_reg(base, base, off_reg, ASR, 3);
+#else
+            *ptr++ = asr_immed(off_reg, off_reg, 3);
+            *ptr++ = add_reg(base, base, off_reg, 0);
+#endif
+#ifdef __aarch64__
         *ptr++ = and_immed(off_reg, off_reg, 3, 0);
+#else
+            *ptr++ = and_immed(off_reg, off_reg, ((1 << 3) - 1));
+#endif
 
         // Build up a mask
+#ifdef __aarch64__
         *ptr++ = and_immed(width_reg, width_reg, 5, 0);
+#else
+            *ptr++ = and_immed(width_reg, width_reg, ((1 << 5) - 1));
+#endif
         *ptr++ = cbnz(width_reg, 2);
         *ptr++ = mov_immed_u16(width_reg, 32, 0);
         *ptr++ = mov_immed_u16(mask_reg, 1, 0);
@@ -4266,7 +5545,15 @@ static uint32_t *EMIT_BFINS_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_
 
             // Get source bitfield, clip to requested size
             if (width != 32) {
-                *ptr++ = ands_immed(masked_src, src, width, 0);
+#ifdef __aarch64__
+    #ifdef __aarch64__
+            *ptr++ = ands_immed(masked_src, src, width, 0);
+#else
+            *ptr++ = ands_immed(masked_src, src, ((1 << width) - 1));
+#endif
+#else
+                *ptr++ = ands_immed(masked_src, src, ((1 << width) - 1));
+#endif
             }
             else {
                 *ptr++ = mov_reg(masked_src, src);
@@ -4284,10 +5571,30 @@ static uint32_t *EMIT_BFINS_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_
                 
                 if (offset != 0) {
                     *ptr++ = ror(testreg, masked_src, 31 & (32 - offset));
+#ifdef __aarch64__
+#ifdef __aarch64__
                     *ptr++ = cmn_reg(31, testreg, LSL, 0);
+#else
+            *ptr++ = lsl_immed(testreg, testreg, 0);
+            *ptr++ = cmn_reg(testreg, 0);
+            *ptr++ = lsr_immed(testreg, testreg, 0);
+#endif
+#else
+            *ptr++ = cmn_reg(testreg, 0);
+#endif
                 }
                 else {
+#ifdef __aarch64__
+#ifdef __aarch64__
                     *ptr++ = cmn_reg(31, masked_src, LSL, 0);
+#else
+            *ptr++ = lsl_immed(masked_src, masked_src, 0);
+            *ptr++ = cmn_reg(masked_src, 0);
+            *ptr++ = lsr_immed(masked_src, masked_src, 0);
+#endif
+#else
+            *ptr++ = cmn_reg(masked_src, 0);
+#endif
                 }
 
                 ptr = EMIT_GetNZ00(ptr, cc, &update_mask);
@@ -4297,9 +5604,21 @@ static uint32_t *EMIT_BFINS_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_
 
             // Clear destination
             if (width != 32) {
+#ifdef __aarch64__
                 *ptr++ = bic_immed(dest, dest, width, 31 & (width + offset));
+#else
+                *ptr++ = bic_immed(dest, dest, ((1 << width) - 1));
+#endif
                 // Insert bitfield
+#ifdef __aarch64__
+#ifdef __aarch64__
                 *ptr++ = orr_reg(dest, dest, masked_src, LSL, 0);
+#else
+            *ptr++ = orr_reg(dest, dest, masked_src, 0);
+#endif
+#else
+            *ptr++ = orr_reg(dest, dest, masked_src, 0);
+#endif
             }
             else {
                 *ptr++ = mov_reg(dest, masked_src);
@@ -4313,7 +5632,17 @@ static uint32_t *EMIT_BFINS_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_
             if (update_mask)
             {
                 uint8_t cc = RA_ModifyCC(&ptr);
+#ifdef __aarch64__
+#ifdef __aarch64__
                 *ptr++ = cmn_reg(31, src, LSL, 0);
+#else
+            *ptr++ = lsl_immed(src, src, 0);
+            *ptr++ = cmn_reg(src, 0);
+            *ptr++ = lsr_immed(src, src, 0);
+#endif
+#else
+            *ptr++ = cmn_reg(src, 0);
+#endif
 
                 ptr = EMIT_GetNZ00(ptr, cc, &update_mask);
             }
@@ -4332,13 +5661,25 @@ static uint32_t *EMIT_BFINS_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_
         uint8_t offset = (opcode2 >> 6) & 31;
 
         // Build up a mask and mask out source bitfield
+#ifdef __aarch64__
         *ptr++ = and_immed(width_reg, width_reg, 5, 0);
+#else
+            *ptr++ = and_immed(width_reg, width_reg, ((1 << 5) - 1));
+#endif
         *ptr++ = cbnz(width_reg, 2);
         *ptr++ = mov_immed_u16(width_reg, 32, 0);
         *ptr++ = mov_immed_u16(mask_reg, 1, 0);
         *ptr++ = lslv64(mask_reg, mask_reg, width_reg);
         *ptr++ = sub64_immed(mask_reg, mask_reg, 1);
+#ifdef __aarch64__
+#ifdef __aarch64__
         *ptr++ = ands_reg(masked_src, src, mask_reg, LSL, 0);
+#else
+            *ptr++ = ands_reg(masked_src, src, mask_reg, 0);
+#endif
+#else
+            *ptr++ = ands_reg(masked_src, src, mask_reg, 0);
+#endif
         *ptr++ = rorv(mask_reg, mask_reg, width_reg);
         *ptr++ = rorv(masked_src, masked_src, width_reg);
 
@@ -4346,19 +5687,53 @@ static uint32_t *EMIT_BFINS_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_
         {
             uint8_t cc = RA_ModifyCC(&ptr);
 
+#ifdef __aarch64__
+#ifdef __aarch64__
             *ptr++ = cmn_reg(31, masked_src, LSL, 0);
+#else
+            *ptr++ = lsl_immed(masked_src, masked_src, 0);
+            *ptr++ = cmn_reg(masked_src, 0);
+            *ptr++ = lsr_immed(masked_src, masked_src, 0);
+#endif
+#else
+            *ptr++ = cmn_reg(masked_src, 0);
+#endif
 
             ptr = EMIT_GetNZ00(ptr, cc, &update_mask);
         }
 
         // Set the mask bits to zero and insert sorce
         if (offset != 0) {
+#ifdef __aarch64__
             *ptr++ = bic_reg(dest, dest, mask_reg, ROR, offset);
+#else
+            *ptr++ = bic_reg(dest, dest, mask_reg);
+#endif
+#ifdef __aarch64__
             *ptr++ = orr_reg(dest, dest, masked_src, ROR, offset);
+#else
+            *ptr++ = orr_reg(dest, dest, masked_src, 0);
+#endif
         }
         else {
+#ifdef __aarch64__
+#ifdef __aarch64__
             *ptr++ = bic_reg(dest, dest, mask_reg, LSL, 0);
+#else
+            *ptr++ = bic_reg(dest, dest, mask_reg, 0);
+#endif
+#else
+            *ptr++ = bic_reg(dest, dest, mask_reg);
+#endif
+#ifdef __aarch64__
+#ifdef __aarch64__
             *ptr++ = orr_reg(dest, dest, masked_src, LSL, 0);
+#else
+            *ptr++ = orr_reg(dest, dest, masked_src, 0);
+#endif
+#else
+            *ptr++ = orr_reg(dest, dest, masked_src, 0);
+#endif
         }
        
         RA_FreeARMRegister(&ptr, tmp);
@@ -4376,14 +5751,22 @@ static uint32_t *EMIT_BFINS_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_
         uint8_t width = opcode2 & 31;
         uint8_t masked_src = RA_AllocARMRegister(&ptr);
 
+#ifdef __aarch64__
         *ptr++ = and_immed(off_reg, off_reg, 5, 0);
+#else
+            *ptr++ = and_immed(off_reg, off_reg, ((1 << 5) - 1));
+#endif
 
         if (width == 0)
             width = 32;
 
         // Get source bitfield, clip to requested size
         if (width != 32) {
+#ifdef __aarch64__
             *ptr++ = ands_immed(masked_src, src, width, 0);
+#else
+            *ptr++ = ands_immed(masked_src, src, ((1 << width) - 1));
+#endif
             *ptr++ = ror(masked_src, masked_src, width);
         }
         else {
@@ -4392,7 +5775,11 @@ static uint32_t *EMIT_BFINS_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_
 
         // Build mask
         if (width != 32) {
+#ifdef __aarch64__
             *ptr++ = orr_immed(mask_reg, 31, width, width);
+#else
+            *ptr++ = orr_immed(mask_reg, 31, ((1 << width) - 1));
+#endif
         }
 
         // Update condition codes if necessary
@@ -4400,7 +5787,17 @@ static uint32_t *EMIT_BFINS_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_
         {
             uint8_t cc = RA_ModifyCC(&ptr);
 
+#ifdef __aarch64__
+#ifdef __aarch64__
             *ptr++ = cmn_reg(31, masked_src, LSL, 0);
+#else
+            *ptr++ = lsl_immed(masked_src, masked_src, 0);
+            *ptr++ = cmn_reg(masked_src, 0);
+            *ptr++ = lsr_immed(masked_src, masked_src, 0);
+#endif
+#else
+            *ptr++ = cmn_reg(masked_src, 0);
+#endif
 
             ptr = EMIT_GetNZ00(ptr, cc, &update_mask);
         }
@@ -4411,9 +5808,25 @@ static uint32_t *EMIT_BFINS_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_
             // Shift source
             *ptr++ = rorv(masked_src, masked_src, off_reg);
             // Clear bitfield
+#ifdef __aarch64__
+#ifdef __aarch64__
             *ptr++ = bic_reg(dest, dest, mask_reg, LSL, 0);
+#else
+            *ptr++ = bic_reg(dest, dest, mask_reg, 0);
+#endif
+#else
+            *ptr++ = bic_reg(dest, dest, mask_reg);
+#endif
             // Insert
+#ifdef __aarch64__
+#ifdef __aarch64__
             *ptr++ = orr_reg(dest, dest, masked_src, LSL, 0);
+#else
+            *ptr++ = orr_reg(dest, dest, masked_src, 0);
+#endif
+#else
+            *ptr++ = orr_reg(dest, dest, masked_src, 0);
+#endif
         }
         else {
             // Width == 32. Just rotate the source into destination
@@ -4435,16 +5848,32 @@ static uint32_t *EMIT_BFINS_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_
         uint8_t masked_src = RA_AllocARMRegister(&ptr);
         uint8_t tmp = RA_AllocARMRegister(&ptr);
 
+#ifdef __aarch64__
         *ptr++ = and_immed(off_reg, off_reg, 5, 0);
+#else
+            *ptr++ = and_immed(off_reg, off_reg, ((1 << 5) - 1));
+#endif
 
         // Build up a mask and mask out source bitfield
+#ifdef __aarch64__
         *ptr++ = and_immed(width_reg, width_reg, 5, 0);
+#else
+            *ptr++ = and_immed(width_reg, width_reg, ((1 << 5) - 1));
+#endif
         *ptr++ = cbnz(width_reg, 2);
         *ptr++ = mov_immed_u16(width_reg, 32, 0);
         *ptr++ = mov_immed_u16(mask_reg, 1, 0);
         *ptr++ = lslv64(mask_reg, mask_reg, width_reg);
         *ptr++ = sub64_immed(mask_reg, mask_reg, 1);
+#ifdef __aarch64__
+#ifdef __aarch64__
         *ptr++ = ands_reg(masked_src, src, mask_reg, LSL, 0);
+#else
+            *ptr++ = ands_reg(masked_src, src, mask_reg, 0);
+#endif
+#else
+            *ptr++ = ands_reg(masked_src, src, mask_reg, 0);
+#endif
         *ptr++ = rorv(mask_reg, mask_reg, width_reg);
         *ptr++ = rorv(masked_src, masked_src, width_reg);
 
@@ -4453,7 +5882,17 @@ static uint32_t *EMIT_BFINS_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_
         {
             uint8_t cc = RA_ModifyCC(&ptr);
 
+#ifdef __aarch64__
+#ifdef __aarch64__
             *ptr++ = cmn_reg(31, masked_src, LSL, 0);
+#else
+            *ptr++ = lsl_immed(masked_src, masked_src, 0);
+            *ptr++ = cmn_reg(masked_src, 0);
+            *ptr++ = lsr_immed(masked_src, masked_src, 0);
+#endif
+#else
+            *ptr++ = cmn_reg(masked_src, 0);
+#endif
 
             ptr = EMIT_GetNZ00(ptr, cc, &update_mask);
         }
@@ -4465,10 +5904,26 @@ static uint32_t *EMIT_BFINS_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_
         *ptr++ = rorv(masked_src, masked_src, off_reg);
 
         // Set bits in field to zeros
+#ifdef __aarch64__
+#ifdef __aarch64__
         *ptr++ = bic_reg(dest, dest, mask_reg, LSL, 0);
+#else
+            *ptr++ = bic_reg(dest, dest, mask_reg, 0);
+#endif
+#else
+            *ptr++ = bic_reg(dest, dest, mask_reg);
+#endif
 
         // Insert field
+#ifdef __aarch64__
+#ifdef __aarch64__
         *ptr++ = orr_reg(dest, dest, masked_src, LSL, 0);
+#else
+            *ptr++ = orr_reg(dest, dest, masked_src, 0);
+#endif
+#else
+            *ptr++ = orr_reg(dest, dest, masked_src, 0);
+#endif
 
         RA_FreeARMRegister(&ptr, tmp);
         RA_FreeARMRegister(&ptr, mask_reg);
@@ -4540,7 +5995,11 @@ static uint32_t *EMIT_BFINS(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
         *ptr++ = ldr64_offset(base, tmp, 0);
 
         // Build up a mask and mask out source bitfield
+#ifdef __aarch64__
         *ptr++ = and_immed(width_reg, width_reg, 5, 0);
+#else
+            *ptr++ = and_immed(width_reg, width_reg, ((1 << 5) - 1));
+#endif
         *ptr++ = cbnz(width_reg, 2);
         *ptr++ = mov_immed_u16(width_reg, 32, 0);
         *ptr++ = mov_immed_u16(mask_reg, 1, 0);
@@ -4610,8 +6069,17 @@ static uint32_t *EMIT_BFINS(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
         }
 
         // Adjust base register according to the offset
+#ifdef __aarch64__
         *ptr++ = add_reg(base, base, off_reg, ASR, 3);
+#else
+            *ptr++ = asr_immed(off_reg, off_reg, 3);
+            *ptr++ = add_reg(base, base, off_reg, 0);
+#endif
+#ifdef __aarch64__
         *ptr++ = and_immed(off_reg, off_reg, 3, 0);
+#else
+            *ptr++ = and_immed(off_reg, off_reg, ((1 << 3) - 1));
+#endif
 
         // Build up a mask
         *ptr++ = orr64_immed(mask_reg, 31, width, width, 1);
@@ -4650,11 +6118,24 @@ static uint32_t *EMIT_BFINS(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
         uint8_t tmp = RA_AllocARMRegister(&ptr);
 
         // Adjust base register according to the offset
+#ifdef __aarch64__
         *ptr++ = add_reg(base, base, off_reg, ASR, 3);
+#else
+            *ptr++ = asr_immed(off_reg, off_reg, 3);
+            *ptr++ = add_reg(base, base, off_reg, 0);
+#endif
+#ifdef __aarch64__
         *ptr++ = and_immed(off_reg, off_reg, 3, 0);
+#else
+            *ptr++ = and_immed(off_reg, off_reg, ((1 << 3) - 1));
+#endif
 
         // Build up a mask and mask out source bitfield
+#ifdef __aarch64__
         *ptr++ = and_immed(width_reg, width_reg, 5, 0);
+#else
+            *ptr++ = and_immed(width_reg, width_reg, ((1 << 5) - 1));
+#endif
         *ptr++ = cbnz(width_reg, 2);
         *ptr++ = mov_immed_u16(width_reg, 32, 0);
         *ptr++ = mov_immed_u16(mask_reg, 1, 0);
@@ -5180,9 +6661,27 @@ uint32_t *EMIT_lineE(uint32_t *ptr, uint16_t **m68k_ptr, uint16_t *insn_consumed
 #ifdef __aarch64__
             uint8_t cc = RA_ModifyCC(&ptr);
             uint8_t tmp = RA_AllocARMRegister(&ptr);
+#ifdef __aarch64__
+#ifdef __aarch64__
             *ptr++ = cmn_reg(31, reg, LSL, 0);
+#else
+            *ptr++ = lsl_immed(reg, reg, 0);
+            *ptr++ = cmn_reg(reg, 0);
+            *ptr++ = lsr_immed(reg, reg, 0);
+#endif
+#else
+            *ptr++ = cmn_reg(reg, 0);
+#endif
             *ptr++ = mov_immed_u16(tmp, update_mask, 0);
+#ifdef __aarch64__
+#ifdef __aarch64__
             *ptr++ = bic_reg(cc, cc, tmp, LSL, 0);
+#else
+            *ptr++ = bic_reg(cc, cc, tmp, 0);
+#endif
+#else
+            *ptr++ = bic_reg(cc, cc, tmp);
+#endif
 
             if (update_mask & SR_Z) {
                 *ptr++ = b_cc(A64_CC_EQ ^ 1, 2);
@@ -5195,7 +6694,15 @@ uint32_t *EMIT_lineE(uint32_t *ptr, uint16_t **m68k_ptr, uint16_t *insn_consumed
             if (update_mask & (SR_C | SR_X)) {
                 *ptr++ = b_cc(A64_CC_CS ^ 1, 3);
                 *ptr++ = mov_immed_u16(tmp, SR_C | SR_X, 0);
+#ifdef __aarch64__
+#ifdef __aarch64__
                 *ptr++ = orr_reg(cc, cc, tmp, LSL, 0);
+#else
+            *ptr++ = orr_reg(cc, cc, tmp, 0);
+#endif
+#else
+            *ptr++ = orr_reg(cc, cc, tmp, 0);
+#endif
             }
             RA_FreeARMRegister(&ptr, tmp);
 #else

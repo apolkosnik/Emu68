@@ -69,7 +69,11 @@ static inline __attribute__((always_inline)) uint32_t * load_reg_from_addr_offse
             if (offset == 0)
                 *ptr++ = ldr_offset(base, reg, 0);
             else if (offset > -256 && offset < 256)
+#ifdef __aarch64__
                 *ptr++ = ldur_offset(base, reg, offset & 0x1ff);
+#else
+                *ptr++ = ldr_offset(base, reg, offset & 0x1ff);
+#endif
             else if (offset > 0 && offset < 16384 && (offset & 3) == 0)
                 *ptr++ = ldr_offset(base, reg, offset);
             else {
@@ -291,11 +295,13 @@ static inline __attribute__((always_inline)) uint32_t * load_reg_from_addr(uint3
                 *ptr++ = ldr_regoffset(base, reg, index, shift);
                 break;
             case 2:
-                tmp = RA_AllocARMRegister(&ptr);
-                if (shift)
-                    *ptr++ = lsl_immed(tmp, index, shift);
-                *ptr++ = ldrh_regoffset(base, reg, tmp);
-                RA_FreeARMRegister(&ptr, tmp);
+                {
+                    uint8_t tmp2 = RA_AllocARMRegister(&ptr);
+                    if (shift)
+                        *ptr++ = lsl_immed(tmp2, index, shift);
+                    *ptr++ = ldrh_regoffset(base, reg, tmp2);
+                    RA_FreeARMRegister(&ptr, tmp2);
+                }
                 break;
             case 1:
                 *ptr++ = ldrb_regoffset(base, reg, index, shift);
@@ -572,11 +578,13 @@ static inline __attribute__((always_inline)) uint32_t * store_reg_to_addr(uint32
                 *ptr++ = str_regoffset(base, reg, index, shift);
                 break;
             case 2:
-                tmp = RA_AllocARMRegister(&ptr);
-                if (shift)
-                    *ptr++ = lsl_immed(tmp, index, shift);
-                *ptr++ = strh_regoffset(base, reg, tmp);
-                RA_FreeARMRegister(&ptr, tmp);
+                {
+                    uint8_t tmp2 = RA_AllocARMRegister(&ptr);
+                    if (shift)
+                        *ptr++ = lsl_immed(tmp2, index, shift);
+                    *ptr++ = strh_regoffset(base, reg, tmp2);
+                    RA_FreeARMRegister(&ptr, tmp2);
+                }
                 break;
             case 1:
                 *ptr++ = strb_regoffset(base, reg, index, shift);
@@ -779,7 +787,11 @@ uint32_t *EMIT_LoadFromEffectiveAddress(uint32_t *ptr, uint8_t size, uint8_t *ar
 
                 /* Rare case where source and dest are the same register and size == 4 */
                 if (size == 4 && reg_An == *arm_reg) {
+#ifdef __aarch64__
                     *ptr++ = ldur_offset(reg_An, *arm_reg, -4);
+#else
+                    *ptr++ = ldr_offset(reg_An, *arm_reg, -4);
+#endif
                 }
                 else
                 {
@@ -1193,7 +1205,11 @@ uint32_t *EMIT_LoadFromEffectiveAddress(uint32_t *ptr, uint8_t size, uint8_t *ar
                         case 3: /* Long displacement */
                             bd_reg = RA_AllocARMRegister(&ptr);
                             if (pc_off & 2) {
+#ifdef __aarch64__
                                 *ptr++ = ldur_offset(REG_PC, bd_reg, pc_off);
+#else
+                                *ptr++ = ldr_offset(REG_PC, bd_reg, pc_off);
+#endif
                             } else {
                                 *ptr++ = ldr_offset(REG_PC, bd_reg, pc_off);
                             }
@@ -1215,7 +1231,11 @@ uint32_t *EMIT_LoadFromEffectiveAddress(uint32_t *ptr, uint8_t size, uint8_t *ar
                         case 3: /* Long outer displacement */
                             outer_reg = RA_AllocARMRegister(&ptr);
                             if (pc_off & 2) {
+#ifdef __aarch64__
                                 *ptr++ = ldur_offset(REG_PC, outer_reg, pc_off);
+#else
+                                *ptr++ = ldr_offset(REG_PC, outer_reg, pc_off);
+#endif
                             }
                             else
                                 *ptr++ = ldr_offset(REG_PC, outer_reg, pc_off);

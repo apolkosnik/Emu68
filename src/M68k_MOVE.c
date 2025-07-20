@@ -145,7 +145,12 @@ uint32_t *EMIT_move(uint32_t *ptr, uint16_t **m68k_ptr, uint16_t *insn_consumed)
 #endif
                 }
 
+#ifdef __aarch64__
                 *ptr++ = stp_preindex(addr_reg, src_reg_2, src_reg_1, -8);
+#else
+                *ptr++ = str_offset_preindex(addr_reg, src_reg_2, -8);
+                *ptr++ = str_offset_preindex(addr_reg, src_reg_1, -4);
+#endif
 
                 tmp_reg = src_reg_2;
             
@@ -183,7 +188,12 @@ uint32_t *EMIT_move(uint32_t *ptr, uint16_t **m68k_ptr, uint16_t *insn_consumed)
 #endif
                 }
 
+#ifdef __aarch64__
                 *ptr++ = stp_postindex(addr_reg, src_reg_1, src_reg_2, 8);
+#else
+                *ptr++ = str_offset_postindex(addr_reg, src_reg_1, 4);
+                *ptr++ = str_offset_postindex(addr_reg, src_reg_2, 4);
+#endif
 
                 tmp_reg = src_reg_2;
             
@@ -212,7 +222,12 @@ uint32_t *EMIT_move(uint32_t *ptr, uint16_t **m68k_ptr, uint16_t *insn_consumed)
                 /* Two subsequent register moves from (An)+ */
                 (*m68k_ptr)+=2;
                 
+#ifdef __aarch64__
                 *ptr++ = ldp_postindex(addr_reg, dst_reg_1, dst_reg_2, 8);
+#else
+                *ptr++ = ldr_offset_postindex(addr_reg, dst_reg_1, 4);
+                *ptr++ = ldr_offset_postindex(addr_reg, dst_reg_2, 4);
+#endif
 
                 if (!is_movea2) {
                     update_mask = M68K_GetSRMask(*m68k_ptr - 1);
@@ -263,7 +278,12 @@ uint32_t *EMIT_move(uint32_t *ptr, uint16_t **m68k_ptr, uint16_t *insn_consumed)
                 /* Two subsequent register moves to (An)+ */
                 (*m68k_ptr)+=2;
 
+#ifdef __aarch64__
                 *ptr++ = ldp_preindex(addr_reg, dst_reg_2, dst_reg_1, -8);
+#else
+                *ptr++ = ldr_offset_preindex(addr_reg, dst_reg_2, -8);
+                *ptr++ = ldr_offset_preindex(addr_reg, dst_reg_1, -4);
+#endif
 
                 if (!is_movea2) {
                     update_mask = M68K_GetSRMask(*m68k_ptr - 1);

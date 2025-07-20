@@ -12,6 +12,7 @@
 #include "support.h"
 #include "M68k.h"
 #include "RegisterAllocator.h"
+#include "ArchCompat.h"
 
 uint32_t *EMIT_Exception(uint32_t *ptr, uint16_t exception, uint8_t format, ...)
 {
@@ -81,8 +82,16 @@ uint32_t *EMIT_Exception(uint32_t *ptr, uint16_t exception, uint8_t format, ...)
     *ptr++ = strh_offset_preindex(sp, cc, -2);
 
     /* Clear trace flags, set supervisor */
+#ifdef __aarch64__
     *ptr++ = bic_immed(cc, cc, 2, 32 - SRB_T0);
+#else
+    *ptr++ = bic_immed(cc, cc, (1 << (32 - SRB_T0)));
+#endif
+#ifdef __aarch64__
     *ptr++ = orr_immed(cc, cc, 1, 32 - SRB_S);
+#else
+    *ptr++ = orr_immed(cc, cc, (1 << (32 - SRB_S)));
+#endif
 
     /* Load VBR */
     *ptr++ = ldr_offset(ctx, vbr, __builtin_offsetof(struct M68KState, VBR));

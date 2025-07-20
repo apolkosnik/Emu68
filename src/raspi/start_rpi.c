@@ -329,7 +329,7 @@ void boot(uintptr_t dummy, uintptr_t arch, uintptr_t atags, uintptr_t dummy2)
         image_end = (void*)(intptr_t)BE32(*(uint32_t*)p->op_value);
 
         kprintf("[BOOT] Loading executable from %p-%p\n", image_start, image_end);
-        void *hunks = LoadHunkFile(image_start);
+        void *hunks = LoadHunkFile(image_start, (void*)0x7f000000);
         start_emu((void *)((intptr_t)hunks + 4));
     }
 
@@ -490,7 +490,7 @@ uint8_t m68kcode[] = {
 
 void *m68kcodeptr = m68kcode;
 
-uint32_t data[128];
+uint32_t boot_data[128];
 
 void print_context(struct M68KState *m68k)
 {
@@ -546,7 +546,7 @@ void print_context(struct M68KState *m68k)
         } u;
         if (i==4)
             printf("\n");
-        u.d = m68k->FP[i];
+        u.d = *(double*)&m68k->FP[i];
         printf("    FP%d = %08x%08x", i, u.u[0], u.u[1]);
     }
     printf("\n");

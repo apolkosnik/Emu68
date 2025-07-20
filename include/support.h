@@ -59,7 +59,10 @@ static inline uint16_t LE16(uint16_t x) { return x; }
 
 #endif
 
+#ifndef __SIZE_T
+#define __SIZE_T
 typedef unsigned long size_t;
+#endif
 
 static inline uint32_t rd32le(uintptr_t iobase) {
     return LE32(*(volatile uint32_t *)(iobase));

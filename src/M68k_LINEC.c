@@ -10,6 +10,7 @@
 #include "support.h"
 #include "M68k.h"
 #include "RegisterAllocator.h"
+#include "ArchCompat.h"
 
 uint32_t *EMIT_MULU(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr);
 uint32_t *EMIT_MULS(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr);
@@ -266,22 +267,51 @@ static uint32_t *EMIT_ABCD_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_p
     RA_SetDirtyM68kRegister(&ptr, (opcode >> 9) & 7);
 
     // Mask higher and lower nibbles, perform calculation. 
+#ifdef __aarch64__
     *ptr++ = and_immed(tmp_a, src, 4, 0);
     *ptr++ = and_immed(tmp_b, dst, 4, 0);
 
     *ptr++ = and_immed(tmp_c, src, 4, 28);
     *ptr++ = and_immed(tmp_d, dst, 4, 28);
+#else
+    *ptr++ = and_immed(tmp_a, src, 0xF);
+    *ptr++ = and_immed(tmp_b, dst, 0xF);
+
+    *ptr++ = and_immed(tmp_c, src, 0xF0);
+    *ptr++ = lsr_immed(tmp_c, tmp_c, 4);
+    *ptr++ = and_immed(tmp_d, dst, 0xF0);
+    *ptr++ = lsr_immed(tmp_d, tmp_d, 4);
+#endif
 
     // Perform calculations, separate for high and low nibbles
+#ifdef __aarch64__
     *ptr++ = add_reg(tmp_a, tmp_a, tmp_b, LSL, 0);
     *ptr++ = add_reg(tmp_c, tmp_c, tmp_d, LSL, 0);
+#else
+    *ptr++ = add_reg(tmp_a, tmp_a, tmp_b, 0);
+    *ptr++ = add_reg(tmp_c, tmp_c, tmp_d, 0);
+#endif
 
     // Add X
+#ifdef __aarch64__
     *ptr++ = tst_immed(cc, 1, 31 & (32 - SRB_X));
+#else
+    *ptr++ = tst_immed(cc, (1 << (31 & (32 - SRB_X))));
+#endif
+#ifdef __aarch64__
     *ptr++ = csinc(tmp_a, tmp_a, tmp_a, A64_CC_EQ);
+#else
+    /* ARM doesn't have csinc, use conditional increment */
+    *ptr++ = mov_immed_u16(tmp_a, 0, 0);
+    *ptr++ = add_cc_immed(A64_CC_EQ, tmp_a, tmp_a, 1);
+#endif
 
     // Compute sum of high and low nibbles into tmp_b
+#ifdef __aarch64__
     *ptr++ = add_reg(tmp_b, tmp_a, tmp_c, LSL, 0);
+#else
+    *ptr++ = add_reg(tmp_b, tmp_a, tmp_c, 0);
+#endif
 
     // if lower nibble higher than 9 make radix adjustment to result
     *ptr++ = cmp_immed(tmp_a, 9);
@@ -289,13 +319,26 @@ static uint32_t *EMIT_ABCD_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_p
     *ptr++ = add_immed(tmp_b, tmp_b, 6);
 
     // Mask higher nibble of result and detect carry
+#ifdef __aarch64__
     *ptr++ = and_immed(tmp_d, tmp_b, 6, 28);
+#else
+    *ptr++ = and_immed(tmp_d, tmp_b, 0x3F);
+    *ptr++ = lsr_immed(tmp_d, tmp_d, 4);
+#endif
     *ptr++ = cmp_immed(tmp_d, 0x90);
     if (update_mask & SR_XC)
     {
+#ifdef __aarch64__
         *ptr++ = bic_immed(cc, cc, 1, 32 - SRB_C);
+#else
+        *ptr++ = bic_immed(cc, cc, (1 << (32 - SRB_C)));
+#endif
         *ptr++ = b_cc(A64_CC_LS, 3);
+#ifdef __aarch64__
         *ptr++ = orr_immed(cc, cc, 1, 32 - SRB_C);
+#else
+        *ptr++ = orr_immed(cc, cc, (1 << (32 - SRB_C)));
+#endif
     }
     else
     {
@@ -315,9 +358,17 @@ static uint32_t *EMIT_ABCD_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_p
     if (update_mask & SR_Z)
     {
         // Z flag updating. AND the result and clear Z if non-zero, leave unchanged otherwise
+#ifdef __aarch64__
         *ptr++ = ands_immed(31, tmp_b, 8, 0);
+#else
+        *ptr++ = ands_immed(31, tmp_b, 0xFF);
+#endif
         *ptr++ = b_cc(A64_CC_EQ, 2);
+#ifdef __aarch64__
         *ptr++ = bic_immed(cc, cc, 1, 32 - SRB_Z);
+#else
+        *ptr++ = bic_immed(cc, cc, (1 << (32 - SRB_Z)));
+#endif
     }
 
     RA_FreeARMRegister(&ptr, tmp_a);
@@ -371,15 +422,34 @@ static uint32_t *EMIT_ABCD_mem(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_p
     *ptr++ = and_immed(tmp_b, tmp_b, 4, 0);
 
     // Perform calculations, separate for high and low nibbles
+#ifdef __aarch64__
     *ptr++ = add_reg(tmp_a, tmp_a, tmp_b, LSL, 0);
     *ptr++ = add_reg(tmp_c, tmp_c, tmp_d, LSL, 0);
+#else
+    *ptr++ = add_reg(tmp_a, tmp_a, tmp_b, 0);
+    *ptr++ = add_reg(tmp_c, tmp_c, tmp_d, 0);
+#endif
 
     // Add X
+#ifdef __aarch64__
     *ptr++ = tst_immed(cc, 1, 31 & (32 - SRB_X));
+#else
+    *ptr++ = tst_immed(cc, (1 << (31 & (32 - SRB_X))));
+#endif
+#ifdef __aarch64__
     *ptr++ = csinc(tmp_a, tmp_a, tmp_a, A64_CC_EQ);
+#else
+    /* ARM doesn't have csinc, use conditional increment */
+    *ptr++ = mov_immed_u16(tmp_a, 0, 0);
+    *ptr++ = add_cc_immed(A64_CC_EQ, tmp_a, tmp_a, 1);
+#endif
 
     // Compute sum of high and low nibbles into tmp_b
+#ifdef __aarch64__
     *ptr++ = add_reg(tmp_b, tmp_a, tmp_c, LSL, 0);
+#else
+    *ptr++ = add_reg(tmp_b, tmp_a, tmp_c, 0);
+#endif
 
     // if lower nibble higher than 9 make radix adjustment to result
     *ptr++ = cmp_immed(tmp_a, 9);
@@ -387,13 +457,26 @@ static uint32_t *EMIT_ABCD_mem(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_p
     *ptr++ = add_immed(tmp_b, tmp_b, 6);
 
     // Mask higher nibble of result and detect carry
+#ifdef __aarch64__
     *ptr++ = and_immed(tmp_d, tmp_b, 6, 28);
+#else
+    *ptr++ = and_immed(tmp_d, tmp_b, 0x3F);
+    *ptr++ = lsr_immed(tmp_d, tmp_d, 4);
+#endif
     *ptr++ = cmp_immed(tmp_d, 0x90);
     if (update_mask & SR_XC)
     {
+#ifdef __aarch64__
         *ptr++ = bic_immed(cc, cc, 1, 32 - SRB_C);
+#else
+        *ptr++ = bic_immed(cc, cc, (1 << (32 - SRB_C)));
+#endif
         *ptr++ = b_cc(A64_CC_LS, 3);
+#ifdef __aarch64__
         *ptr++ = orr_immed(cc, cc, 1, 32 - SRB_C);
+#else
+        *ptr++ = orr_immed(cc, cc, (1 << (32 - SRB_C)));
+#endif
     }
     else
     {
@@ -413,9 +496,17 @@ static uint32_t *EMIT_ABCD_mem(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_p
     if (update_mask & SR_Z)
     {
         // Z flag updating. AND the result and clear Z if non-zero, leave unchanged otherwise
+#ifdef __aarch64__
         *ptr++ = ands_immed(31, tmp_b, 8, 0);
+#else
+        *ptr++ = ands_immed(31, tmp_b, 0xFF);
+#endif
         *ptr++ = b_cc(A64_CC_EQ, 2);
+#ifdef __aarch64__
         *ptr++ = bic_immed(cc, cc, 1, 32 - SRB_Z);
+#else
+        *ptr++ = bic_immed(cc, cc, (1 << (32 - SRB_Z)));
+#endif
     }
 
     RA_FreeARMRegister(&ptr, tmp_a);

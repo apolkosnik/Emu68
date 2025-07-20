@@ -10,6 +10,7 @@
 #include "support.h"
 #include "M68k.h"
 #include "RegisterAllocator.h"
+#include "ArchCompat.h"
 
 /* Line9 is one large ADDX/ADD/ADDA */
 
@@ -234,7 +235,7 @@ static uint32_t *EMIT_ADDA_ext(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_p
 
     *ptr++ = add_reg(reg, reg, tmp, LSL, 0);
 #else
-    if (size == 2)396
+    if (size == 2)
         *ptr++ = sxth(tmp, tmp, 0);
 
     *ptr++ = add_reg(reg, reg, tmp, 0);

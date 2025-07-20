@@ -7,10 +7,10 @@
     with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
 */
 
-#include "A64.h"
 #include "support.h"
 #include "M68k.h"
 #include "RegisterAllocator.h"
+#include "ArchCompat.h"
 
 uint32_t *EMIT_MUL_DIV(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr);
 static uint32_t *EMIT_MUL_DIV_(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
@@ -351,24 +351,66 @@ uint32_t *EMIT_SBCD_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
     uint8_t cc = RA_ModifyCC(&ptr);
 
     /* Extract dest into further temp register (used to check overflow and flags) */
+#ifdef __aarch64__
     *ptr++ = and_immed(tmp_n, dest, 8, 0);
+#else
+    *ptr++ = and_immed(tmp_n, dest, 0xFF);
+#endif
 
+#ifdef __aarch64__
     *ptr++ = and_immed(tmp_a, src, 4, 0);   // Fetch low nibbles
+#else
+    *ptr++ = and_immed(tmp_a, src, 0xF);   // Fetch low nibbles
+#endif
+#ifdef __aarch64__
     *ptr++ = and_immed(tmp_b, dest, 4, 0);
+#else
+    *ptr++ = and_immed(tmp_b, dest, 0xF);
+#endif
 
+#ifdef __aarch64__
     *ptr++ = and_immed(tmp_c, src, 4, 28);  // Fetch high nibbles
+#else
+    *ptr++ = and_immed(tmp_c, src, 0xF0);  // Fetch high nibbles
+    *ptr++ = lsr_immed(tmp_c, tmp_c, 4);  // Shift to low nibble
+#endif
+#ifdef __aarch64__
     *ptr++ = and_immed(tmp_d, dest, 4, 28);
+#else
+    *ptr++ = and_immed(tmp_d, dest, 0xF0);
+    *ptr++ = lsr_immed(tmp_d, tmp_d, 4);
+#endif
 
     // Test X flag
+#ifdef __aarch64__
     *ptr++ = tst_immed(cc, 1, 31 & (32 - SRB_X));   // Sub X
+#else
+    *ptr++ = tst_immed(cc, (1 << (31 & (32 - SRB_X))));   // Sub X
+#endif
 
     // Subtract nibbles
+#ifdef __aarch64__
     *ptr++ = sub_reg(tmp_a, tmp_b, tmp_a, LSL, 0);
+#else
+    *ptr++ = sub_reg(tmp_a, tmp_b, tmp_a, 0);
+#endif
+#ifdef __aarch64__
     *ptr++ = sub_reg(tmp_c, tmp_d, tmp_c, LSL, 0);
+#else
+    *ptr++ = sub_reg(tmp_c, tmp_d, tmp_c, 0);
+#endif
     
     // Extract 8-bit src into tmp_b and perform subtraction on tmp_n test reg
+#ifdef __aarch64__
     *ptr++ = and_immed(tmp_b, src, 8, 0);
+#else
+    *ptr++ = and_immed(tmp_b, src, 0xFF);
+#endif
+#ifdef __aarch64__
     *ptr++ = sub_reg(tmp_n, tmp_n, tmp_b, LSL, 0);
+#else
+    *ptr++ = sub_reg(tmp_n, tmp_n, tmp_b, 0);
+#endif
 
     // if X was set (NE), decrease lower nibble result by one
     *ptr++ = b_cc(A64_CC_EQ, 3);
@@ -380,10 +422,18 @@ uint32_t *EMIT_SBCD_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
     }
 
     // Join nibbles together in tmp_b register
+#ifdef __aarch64__
     *ptr++ = add_reg(tmp_b, tmp_a, tmp_c, LSL, 0);
+#else
+    *ptr++ = add_reg(tmp_b, tmp_a, tmp_c, 0);
+#endif
 
     // If lower libble overflowed, do radix correction
+#ifdef __aarch64__
     *ptr++ = ands_immed(31, tmp_a, 4, 28);
+#else
+    *ptr++ = ands_immed(31, tmp_a, 0xF);
+#endif
     if (update_mask & SR_XC) {
         *ptr++ = b_cc(A64_CC_EQ, 3);
         *ptr++ = sub_immed(tmp_b, tmp_b, 6);
@@ -395,15 +445,31 @@ uint32_t *EMIT_SBCD_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
     }
 
     // Check if result overflowed
+#ifdef __aarch64__
     *ptr++ = ands_immed(31, tmp_n, 1, 24);
+#else
+    *ptr++ = ands_immed(31, tmp_n, (1 << 24));
+#endif
     *ptr++ = b_cc(A64_CC_EQ, 2);
     *ptr++ = sub_immed(tmp_b, tmp_b, 0x60);
 
     if (update_mask & SR_XC) {
+#ifdef __aarch64__
         *ptr++ = bic_immed(cc, cc, 1, 0);
+#else
+        *ptr++ = bic_immed(cc, cc, 1);
+#endif
+#ifdef __aarch64__
         *ptr++ = ands_immed(31, tmp_d, 2, 24);
+#else
+        *ptr++ = ands_immed(31, tmp_d, (3 << 24));
+#endif
         *ptr++ = b_cc(A64_CC_EQ, 2);
+#ifdef __aarch64__
         *ptr++ = orr_immed(cc, cc, 1, 0);
+#else
+        *ptr++ = orr_immed(cc, cc, 1);
+#endif
 
         if (update_mask & SR_X) {
             *ptr++ = bfi(cc, cc, 4, 1);
@@ -414,9 +480,17 @@ uint32_t *EMIT_SBCD_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
     *ptr++ = bfi(dest, tmp_b, 0, 8);
 
     if (update_mask & SR_Z) {
+#ifdef __aarch64__
         *ptr++ = ands_immed(31, tmp_b, 8, 0);
+#else
+        *ptr++ = ands_immed(31, tmp_b, 0xFF);
+#endif
         *ptr++ = b_cc(A64_CC_EQ, 2);
+#ifdef __aarch64__
         *ptr++ = bic_immed(cc, cc, 1, 31 & (32 - SRB_Z));
+#else
+        *ptr++ = bic_immed(cc, cc, (1 << (31 & (32 - SRB_Z))));
+#endif
     }
 
     RA_FreeARMRegister(&ptr, tmp_a);
@@ -455,21 +529,55 @@ uint32_t *EMIT_SBCD_mem(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
     else
         *ptr++ = ldrb_offset_preindex(an_dest, tmp_n, -1);
 
+#ifdef __aarch64__
     *ptr++ = and_immed(tmp_a, src, 4, 0);   // Fetch low nibbles
+#else
+    *ptr++ = and_immed(tmp_a, src, 0xF);   // Fetch low nibbles
+#endif
+#ifdef __aarch64__
     *ptr++ = and_immed(tmp_b, tmp_n, 4, 0);
+#else
+    *ptr++ = and_immed(tmp_b, tmp_n, 0xF);
+#endif
 
+#ifdef __aarch64__
     *ptr++ = and_immed(tmp_c, src, 4, 28);  // Fetch high nibbles
+#else
+    *ptr++ = and_immed(tmp_c, src, 0xF0);  // Fetch high nibbles
+    *ptr++ = lsr_immed(tmp_c, tmp_c, 4);  // Shift to low nibble
+#endif
+#ifdef __aarch64__
     *ptr++ = and_immed(tmp_d, tmp_n, 4, 28);
+#else
+    *ptr++ = and_immed(tmp_d, tmp_n, 0xF0);
+    *ptr++ = lsr_immed(tmp_d, tmp_d, 4);
+#endif
 
     // Test X flag
+#ifdef __aarch64__
     *ptr++ = tst_immed(cc, 1, 31 & (32 - SRB_X));   // Sub X
+#else
+    *ptr++ = tst_immed(cc, (1 << (31 & (32 - SRB_X))));   // Sub X
+#endif
 
     // Subtract nibbles
+#ifdef __aarch64__
     *ptr++ = sub_reg(tmp_a, tmp_b, tmp_a, LSL, 0);
+#else
+    *ptr++ = sub_reg(tmp_a, tmp_b, tmp_a, 0);
+#endif
+#ifdef __aarch64__
     *ptr++ = sub_reg(tmp_c, tmp_d, tmp_c, LSL, 0);
+#else
+    *ptr++ = sub_reg(tmp_c, tmp_d, tmp_c, 0);
+#endif
     
     // Perform subtraction on tmp_n test reg
+#ifdef __aarch64__
     *ptr++ = sub_reg(tmp_n, tmp_n, src, LSL, 0);
+#else
+    *ptr++ = sub_reg(tmp_n, tmp_n, src, 0);
+#endif
 
     // if X was set (NE), decrease lower nibble result by one
     *ptr++ = b_cc(A64_CC_EQ, 3);
@@ -481,10 +589,18 @@ uint32_t *EMIT_SBCD_mem(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
     }
 
     // Join nibbles together in tmp_b register
+#ifdef __aarch64__
     *ptr++ = add_reg(tmp_b, tmp_a, tmp_c, LSL, 0);
+#else
+    *ptr++ = add_reg(tmp_b, tmp_a, tmp_c, 0);
+#endif
 
     // If lower libble overflowed, do radix correction
+#ifdef __aarch64__
     *ptr++ = ands_immed(31, tmp_a, 4, 28);
+#else
+    *ptr++ = ands_immed(31, tmp_a, 0xF);
+#endif
     if (update_mask & SR_XC) {
         *ptr++ = b_cc(A64_CC_EQ, 3);
         *ptr++ = sub_immed(tmp_b, tmp_b, 6);
@@ -496,15 +612,31 @@ uint32_t *EMIT_SBCD_mem(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
     }
 
     // Check if result overflowed
+#ifdef __aarch64__
     *ptr++ = ands_immed(31, tmp_n, 1, 24);
+#else
+    *ptr++ = ands_immed(31, tmp_n, (1 << 24));
+#endif
     *ptr++ = b_cc(A64_CC_EQ, 2);
     *ptr++ = sub_immed(tmp_b, tmp_b, 0x60);
 
     if (update_mask & SR_XC) {
+#ifdef __aarch64__
         *ptr++ = bic_immed(cc, cc, 1, 0);
+#else
+        *ptr++ = bic_immed(cc, cc, 1);
+#endif
+#ifdef __aarch64__
         *ptr++ = ands_immed(31, tmp_d, 2, 24);
+#else
+        *ptr++ = ands_immed(31, tmp_d, (3 << 24));
+#endif
         *ptr++ = b_cc(A64_CC_EQ, 2);
+#ifdef __aarch64__
         *ptr++ = orr_immed(cc, cc, 1, 0);
+#else
+        *ptr++ = orr_immed(cc, cc, 1);
+#endif
 
         if (update_mask & SR_X) {
             *ptr++ = bfi(cc, cc, 4, 1);
@@ -515,9 +647,17 @@ uint32_t *EMIT_SBCD_mem(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
     *ptr++ = strb_offset(an_dest, tmp_b, 0);
 
     if (update_mask & SR_Z) {
+#ifdef __aarch64__
         *ptr++ = ands_immed(31, tmp_b, 8, 0);
+#else
+        *ptr++ = ands_immed(31, tmp_b, 0xFF);
+#endif
         *ptr++ = b_cc(A64_CC_EQ, 2);
+#ifdef __aarch64__
         *ptr++ = bic_immed(cc, cc, 1, 31 & (32 - SRB_Z));
+#else
+        *ptr++ = bic_immed(cc, cc, (1 << (31 & (32 - SRB_Z))));
+#endif
     }
 
     RA_FreeARMRegister(&ptr, tmp_a);
@@ -569,7 +709,11 @@ uint32_t *EMIT_SBCD_mem(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
         if (update_mask & SR_Z)
         {
             *ptr++ = b_cc(A64_CC_EQ, 2);
-            *ptr++ = bic_immed(cc, cc, 1, 31 & (32 - SRB_Z));
+    #ifdef __aarch64__
+        *ptr++ = bic_immed(cc, cc, 1, 31 & (32 - SRB_Z));
+#else
+        *ptr++ = bic_immed(cc, cc, (1 << (31 & (32 - SRB_Z))));
+#endif
         }
         if (update_mask & SR_N)
         {

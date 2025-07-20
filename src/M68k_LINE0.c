@@ -724,7 +724,11 @@ uint32_t *EMIT_ORI_TO_SR(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
     /* No supervisor. Update USP, generate exception */
     ptr = EMIT_Exception(ptr, VECTOR_PRIVILEGE_VIOLATION, 0);
     
+#ifdef __aarch64__
     *tmp = b_cc(A64_CC_AL, ptr - tmp);
+#else
+    *tmp = b_cc(ARM_CC_AL, ptr - tmp);
+#endif
     *ptr++ = (uint32_t)(uintptr_t)tmp;
     *ptr++ = 1;
     *ptr++ = 0;
@@ -782,7 +786,11 @@ uint32_t *EMIT_ORI(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
         case 0x0080:    /* Long operation */
             u32 = BE16((*m68k_ptr)[ext_count++]) << 16;
             u32 |= BE16((*m68k_ptr)[ext_count++]);
+#ifdef __aarch64__
             mask32 = number_to_mask(u32);
+#else
+            mask32 = 0; /* ARM doesn't have number_to_mask, use movw instead */
+#endif
             if (mask32 == 0 || mask32 == 0xffffffff)
             {
                 mask32 = 0;
@@ -985,7 +993,7 @@ uint32_t *EMIT_ANDI_TO_CCR(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
     *ptr++ = and_reg(cc, cc, immed, LSL, 0);
 #else
     /* Load immediate into the register */
-    *ptr++ = mov_immed_u16(immed, 0xff00 | val);
+    *ptr++ = movw_immed_u16(immed, 0xff00 | val);
     M68K_ModifyCC(&ptr);
     *ptr++ = and_reg(REG_SR, REG_SR, immed, 0);
 #endif
@@ -1064,7 +1072,11 @@ uint32_t *EMIT_ANDI_TO_SR(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
     /* No supervisor. Update USP, generate exception */
     ptr = EMIT_Exception(ptr, VECTOR_PRIVILEGE_VIOLATION, 0);
     
+#ifdef __aarch64__
     *tmp = b_cc(A64_CC_AL, ptr - tmp);
+#else
+    *tmp = b_cc(ARM_CC_AL, ptr - tmp);
+#endif
     *ptr++ = (uint32_t)(uintptr_t)tmp;
     *ptr++ = 1;
     *ptr++ = 0;
@@ -1121,7 +1133,11 @@ uint32_t *EMIT_ANDI(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
         case 0x0080:    /* Long operation */
             u32 = BE16((*m68k_ptr)[ext_count++]) << 16;
             u32 |= BE16((*m68k_ptr)[ext_count++]);
+#ifdef __aarch64__
             mask32 = number_to_mask(u32);
+#else
+            mask32 = 0; /* ARM doesn't have number_to_mask, use movw instead */
+#endif
             if (mask32 == 0 || mask32 == 0xffffffff)
             {
                 mask32 = 0;
@@ -1383,7 +1399,11 @@ uint32_t *EMIT_EORI_TO_SR(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
     /* No supervisor. Update USP, generate exception */
     ptr = EMIT_Exception(ptr, VECTOR_PRIVILEGE_VIOLATION, 0);
     
+#ifdef __aarch64__
     *tmp = b_cc(A64_CC_AL, ptr - tmp);
+#else
+    *tmp = b_cc(ARM_CC_AL, ptr - tmp);
+#endif
     *ptr++ = (uint32_t)(uintptr_t)tmp;
     *ptr++ = 1;
     *ptr++ = 0;
@@ -1441,7 +1461,11 @@ uint32_t *EMIT_EORI(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
         case 0x0080:    /* Long operation */
             u32 = BE16((*m68k_ptr)[ext_count++]) << 16;
             u32 |= BE16((*m68k_ptr)[ext_count++]);
+#ifdef __aarch64__
             mask32 = number_to_mask(u32);
+#else
+            mask32 = 0; /* ARM doesn't have number_to_mask, use movw instead */
+#endif
             if (mask32 == 0 || mask32 == 0xffffffff)
             {
                 mask32 = 0;
@@ -2744,11 +2768,19 @@ uint32_t *EMIT_MOVES(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
     ptr = EMIT_FlushPC(ptr);
 
     /* Test if supervisor mode is active */
+#ifdef __aarch64__
     *ptr++ = ands_immed(31, cc, 1, 32 - SRB_S);
+#else
+    *ptr++ = tst_immed(cc, 1 << SRB_S);
+#endif
 
     /* Branch to exception if not in supervisor */
     tmp_priv = ptr;
+#ifdef __aarch64__
     *ptr++ = b_cc(A64_CC_EQ, 0);
+#else
+    *ptr++ = b_cc(ARM_CC_EQ, 0);
+#endif
 
     // Transfer from Register to EA
     if (opcode2 & (1 << 11)) {
@@ -2785,11 +2817,11 @@ uint32_t *EMIT_MOVES(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
                 switch (size)
                 {
                     case 1:
-                        *ptr++ = sxtb(reg, tmpreg);
+                        *ptr++ = sxtb(reg, tmpreg, 0);
                         break;
                 
                     case 2:
-                        *ptr++ = sxth(reg, tmpreg);
+                        *ptr++ = sxth(reg, tmpreg, 0);
                         break;
                 }
             }
@@ -2814,16 +2846,28 @@ uint32_t *EMIT_MOVES(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
     *ptr++ = add_immed(REG_PC, REG_PC, 2 * (ext_count + 1));
 
     tmp = ptr;
+#ifdef __aarch64__
     *ptr++ = b_cc(A64_CC_AL, 0);
+#else
+    *ptr++ = b_cc(ARM_CC_AL, 0);
+#endif
 
+#ifdef __aarch64__
     *tmp_priv = b_cc(A64_CC_EQ, ptr - tmp_priv);
+#else
+    *tmp_priv = b_cc(ARM_CC_EQ, ptr - tmp_priv);
+#endif
     ptr = EMIT_Exception(ptr, VECTOR_PRIVILEGE_VIOLATION, 0);
 
     (*m68k_ptr) += ext_count;
 
     RA_FreeARMRegister(&ptr, reg);
 
+#ifdef __aarch64__
     *tmp = b_cc(A64_CC_AL, ptr - tmp);
+#else
+    *tmp = b_cc(ARM_CC_AL, ptr - tmp);
+#endif
     *ptr++ = (uint32_t)(uintptr_t)tmp;
     *ptr++ = 1;
     *ptr++ = 0;

@@ -11,6 +11,16 @@
 #include "M68k.h"
 #include "RegisterAllocator.h"
 
+/* Architecture compatibility macros */
+#ifndef __aarch64__
+#define A64_CC_EQ ARM_CC_EQ
+#define A64_CC_AL ARM_CC_AL
+#define A64_CC_NE ARM_CC_NE
+#define LSL 0
+/* ARM doesn't have conditional select, use conditional move */
+#define csel(dest, src1, src2, cond) mov_cc_reg(cond, dest, src1)
+#endif
+
 uint32_t *EMIT_MUL_DIV(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr);
 
 uint32_t *EMIT_MUL_DIV_(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr, uint16_t *insn_consumed)
@@ -1435,7 +1445,11 @@ static uint32_t *EMIT_NOP(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr, u
     (void)opcode;
     (void)m68k_ptr;
 
+#ifdef __aarch64__
     *ptr++ = dsb_sy();
+#else
+    /* ARM doesn't need explicit memory barrier for NOP */
+#endif
     ptr = EMIT_AdvancePC(ptr, 2);
     ptr = EMIT_FlushPC(ptr);
 
@@ -1697,11 +1711,23 @@ static uint32_t *EMIT_RTS(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr, u
         */
         uint8_t reg = RA_AllocARMRegister(&ptr);
         uint32_t *tmp;
+#ifdef __aarch64__
         *ptr++ = ldr_pcrel(reg, 4);
+#else
+        *ptr++ = ldr_offset(REG_PC, reg, 4);
+#endif
+#ifdef __aarch64__
         *ptr++ = cmp_reg(reg, REG_PC, LSL, 0);
+#else
+        *ptr++ = cmp_reg(reg, REG_PC);
+#endif
         tmp = ptr;
         *ptr++ = b_cc(ARM_CC_EQ, 0);
+#ifdef __aarch64__
         *ptr++ = b(2);
+#else
+        *ptr++ = b_cc(ARM_CC_AL, 2);
+#endif
         *ptr++ = (uint32_t)(uintptr_t)ret_addr;
 
         *m68k_ptr = ret_addr;
@@ -1730,7 +1756,11 @@ static uint32_t *EMIT_TRAPV(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr,
     ptr = EMIT_AdvancePC(ptr, 2);
     ptr = EMIT_FlushPC(ptr);
 
+#ifdef __aarch64__
     *ptr++ = ands_immed(31, cc, 1, 32 - SRB_V);
+#else
+    *ptr++ = tst_immed(cc, 1 << SRB_V);
+#endif
     tmpptr = ptr;
     *ptr++ = b_cc(A64_CC_EQ, 0);
     

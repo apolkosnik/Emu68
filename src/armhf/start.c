@@ -8,9 +8,68 @@
 */
 
 #include <stdint.h>
+#include <stddef.h>
 #include "config.h"
+#include "M68k.h"
+#include "ARM.h"
 
 void boot(uintptr_t dummy, uintptr_t arch, uintptr_t atags, uintptr_t dummy2);
+
+/* Missing symbols needed for linking */
+struct M68KState *__m68k_state;
+
+void M68K_PrintContext(struct M68KState *m68k)
+{
+    /* Minimal implementation for ARM */
+    (void)m68k;
+}
+
+/* Stub implementations for missing 64-bit instruction encoders */
+uint32_t csinc(uint8_t rd, uint8_t rn, uint8_t rm, uint8_t cond) { return 0; }
+uint32_t ldr64_offset(uint8_t rn, uint8_t rt, int32_t offset) { return 0; }
+uint32_t str64_offset(uint8_t rn, uint8_t rt, int32_t offset) { return 0; }
+uint32_t bfi64(uint8_t rd, uint8_t rn, uint8_t lsb, uint8_t width) { return 0; }
+uint32_t ands64_immed(uint8_t rd, uint8_t rn, uint8_t width, uint8_t ror, uint8_t n) { return 0; }
+uint32_t ror64(uint8_t rd, uint8_t rn, uint8_t shift) { return 0; }
+uint32_t orr64_immed(uint8_t rd, uint8_t rn, uint8_t width, uint8_t ror, uint8_t n) { return 0; }
+uint32_t eor64_immed(uint8_t rd, uint8_t rn, uint8_t width, uint8_t ror, uint8_t n) { return 0; }
+uint32_t lsl64(uint8_t rd, uint8_t rn, uint8_t shift) { return 0; }
+
+/* Add missing GCC builtin */
+int __popcountsi2(unsigned int a) {
+    /* Simple population count implementation */
+    int count = 0;
+    while (a) {
+        count += a & 1;
+        a >>= 1;
+    }
+    return count;
+}
+
+/* Standard C library function - needed for capstone */
+char *strrchr(const char *s, int c) {
+    char *last = NULL;
+    while (*s) {
+        if (*s == c) last = (char*)s;
+        s++;
+    }
+    return last;
+}
+
+/* Register allocator functions for ARM */
+uint8_t RA_TryCTX(uint32_t **ptr) { 
+    /* ARM version - try to get context register, return 0xff if not available */
+    (void)ptr;
+    return 0xff; 
+}
+void RA_FlushCTX(uint32_t **ptr) { 
+    /* ARM version - flush context if needed */
+    (void)ptr;
+}
+
+/* AArch64-specific functions not available in ARM - provide minimal stubs */
+/* These should not be called when ArchCompat.h mappings are used properly */
+uint32_t movn_immed_u16(uint8_t rd, uint16_t imm, uint8_t shift) { return movw_immed_u16(rd, ~imm); }
 
 asm("   .section .startup           \n"
 "       .globl _start               \n"

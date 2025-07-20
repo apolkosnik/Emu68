@@ -10,6 +10,7 @@
 #include "support.h"
 #include "M68k.h"
 #include "RegisterAllocator.h"
+#include "ArchCompat.h"
 #include "EmuFeatures.h"
 #include "lists.h"
 #include "tlsf.h"
@@ -2036,8 +2037,10 @@ void __attribute__((naked)) clear_entire_dcache(void)
 "   mov r9, r4                  \n"     // R9 working copy of the max way size (right aligned)
 "2: ldr r7, =0x00007FFF         \n"
 "   ands r7, r7, r1, lsr #13    \n"     // R7 is the max number of the index size (right aligned)
-"3: orr r11, r10, r9, lsl r5    \n"     // factor in the way number and cache number into R11
-"   orr r11, r11, r7, lsl r2    \n"     // factor in the index number
+"3: lsl r11, r9, r5             \n"     // shift way number by way size
+"   orr r11, r10, r11           \n"     // factor in cache number into R11
+"   lsl r9, r7, r2              \n"     // shift index by index size
+"   orr r11, r11, r9            \n"     // factor in the index number
 "   mcr p15, 0, r11, c7, c14, 2 \n"     // clean and invalidate by set/way
 "   subs r7, r7, #1             \n"     // decrement the index
 "   bge 3b                      \n"
@@ -2078,8 +2081,10 @@ void __attribute__((naked)) invalidate_entire_dcache(void)
 "   mov r9, r4                  \n"     // R9 working copy of the max way size (right aligned)
 "2: ldr r7, =0x00007FFF         \n"
 "   ands r7, r7, r1, lsr #13    \n"     // R7 is the max number of the index size (right aligned)
-"3: orr r11, r10, r9, lsl r5    \n"     // factor in the way number and cache number into R11
-"   orr r11, r11, r7, lsl r2    \n"     // factor in the index number
+"3: lsl r11, r9, r5             \n"     // shift way number by way size
+"   orr r11, r10, r11           \n"     // factor in cache number into R11
+"   lsl r9, r7, r2              \n"     // shift index by index size
+"   orr r11, r11, r9            \n"     // factor in the index number
 "   mcr p15, 0, r11, c7, c6, 2  \n"     // invalidate by set/way
 "   subs r7, r7, #1             \n"     // decrement the index
 "   bge 3b                      \n"
@@ -2316,12 +2321,24 @@ uint32_t *EMIT_FPU(uint32_t *ptr, uint16_t **m68k_ptr, uint16_t *insn_consumed)
 
             if (offset == C_ZERO)
             {
+#ifdef __aarch64__
                 *ptr++ = bic_immed(fpsr, fpsr, 4, 32 - FPSRB_NAN);
+#else
+                *ptr++ = bic_immed(fpsr, fpsr, (1 << (32 - FPSRB_NAN)));
+#endif
+#ifdef __aarch64__
                 *ptr++ = orr_immed(fpsr, fpsr, 1, 32 - FPSRB_Z);
+#else
+                *ptr++ = orr_immed(fpsr, fpsr, (1 << (32 - FPSRB_Z)));
+#endif
             }
             else if (offset < C_ZERO || offset >= C_LN2)
             {
+#ifdef __aarch64__
                 *ptr++ = bic_immed(fpsr, fpsr, 4, 32 - FPSRB_NAN);
+#else
+                *ptr++ = bic_immed(fpsr, fpsr, (1 << (32 - FPSRB_NAN)));
+#endif
             }
             else
             {
