@@ -12,6 +12,22 @@
 
 #include <stdint.h>
 
+typedef struct {
+    uint8_t m68k_arm_reg[16];
+    uint8_t m68k_dirty[16];
+    int8_t lru_table[8];
+    uint16_t register_pool;
+    uint16_t changed_mask;
+    uint8_t fpu_alloc_state;
+    uint8_t fpu_reg_state[8];
+    uint8_t got_cc;
+    uint8_t mod_cc;
+    uint8_t reg_fpcr;
+    uint8_t mod_fpcr;
+    uint8_t reg_fpsr;
+    uint8_t mod_fpsr;
+} RAStateSnapshot;
+
 void RA_TouchM68kRegister(uint32_t **arm_stream, uint8_t m68k_reg);
 void RA_SetDirtyM68kRegister(uint32_t **arm_stream, uint8_t m68k_reg);
 void RA_InsertM68kRegister(uint32_t **arm_stream, uint8_t m68k_reg);
@@ -65,5 +81,8 @@ void RA_StoreFPSR(uint32_t **ptr);
 
 uint32_t *EMIT_SaveRegFrame(uint32_t *ptr, uint32_t mask);
 uint32_t *EMIT_RestoreRegFrame(uint32_t *ptr, uint32_t mask);
+
+void RA_SaveState(RAStateSnapshot *snapshot);
+void RA_RestoreState(const RAStateSnapshot *snapshot);
 
 #endif /* _REGISTER_ALLOCATOR_H */

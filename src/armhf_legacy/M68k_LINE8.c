@@ -10,7 +10,7 @@
 #include "support.h"
 #include "M68k.h"
 #include "RegisterAllocator.h"
-#include "cache.h"
+#include "ArchCompat.h"
 
 uint32_t *EMIT_MUL_DIV(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr);
 static uint32_t *EMIT_MUL_DIV_(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
@@ -28,7 +28,8 @@ uint32_t *EMIT_DIVS_ext(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr) __a
 uint32_t *EMIT_PACK_mem(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr) __attribute__((alias("EMIT_PACK_reg")));
 uint32_t *EMIT_PACK_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
 {
-    uint16_t addend = cache_read_16(ICACHE, (uintptr_t)&(*m68k_ptr)[0]);
+#ifdef __aarch64__
+    uint16_t addend = BE16((*m68k_ptr)[0]);
     uint8_t tmp = -1;
 
     if (opcode & 8)
@@ -78,6 +79,65 @@ uint32_t *EMIT_PACK_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
     ptr = EMIT_AdvancePC(ptr, 4);
 
     RA_FreeARMRegister(&ptr, tmp);
+#else
+    int16_t addend = BE16((*m68k_ptr)[0]);
+    uint8_t tmp = 0xff;
+    uint8_t hi = 0xff;
+
+    if (opcode & 8)
+    {
+        uint8_t an_src = RA_MapM68kRegister(&ptr, 8 + (opcode & 7));
+        tmp = RA_AllocARMRegister(&ptr);
+        *ptr++ = ldrsh_offset_preindex(an_src, tmp, -2);
+        RA_SetDirtyM68kRegister(&ptr, 8 + (opcode & 7));
+    }
+    else
+    {
+        tmp = RA_CopyFromM68kRegister(&ptr, opcode & 7);
+    }
+
+    if (addend != 0)
+    {
+        uint8_t adj = RA_AllocARMRegister(&ptr);
+        *ptr++ = movw_immed_u16(adj, (uint16_t)addend);
+        if (addend < 0) {
+            *ptr++ = movt_immed_u16(adj, 0xffff);
+        }
+        *ptr++ = add_reg(tmp, tmp, adj, 0);
+        RA_FreeARMRegister(&ptr, adj);
+    }
+
+    hi = RA_AllocARMRegister(&ptr);
+    *ptr++ = lsr_immed(hi, tmp, 4);
+    *ptr++ = and_immed(hi, hi, 0xf0);
+    *ptr++ = and_immed(tmp, tmp, 0x0f);
+    *ptr++ = orr_reg(tmp, tmp, hi, 0);
+
+    if (opcode & 8)
+    {
+        uint8_t dst = RA_MapM68kRegister(&ptr, 8 + ((opcode >> 9) & 7));
+        RA_SetDirtyM68kRegister(&ptr, 8 + ((opcode >> 9) & 7));
+
+        if (((opcode >> 9) & 7) == 7) {
+            *ptr++ = strb_offset_preindex(dst, tmp, -2);
+        }
+        else {
+            *ptr++ = strb_offset_preindex(dst, tmp, -1);
+        }
+    }
+    else
+    {
+        uint8_t dst = RA_MapM68kRegister(&ptr, (opcode >> 9) & 7);
+        RA_SetDirtyM68kRegister(&ptr, (opcode >> 9) & 7);
+        *ptr++ = bfi(dst, tmp, 0, 8);
+    }
+
+    (*m68k_ptr)++;
+    ptr = EMIT_AdvancePC(ptr, 4);
+
+    RA_FreeARMRegister(&ptr, hi);
+    RA_FreeARMRegister(&ptr, tmp);
+#endif
 
     return ptr;
 }
@@ -85,7 +145,8 @@ uint32_t *EMIT_PACK_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
 uint32_t *EMIT_UNPK_mem(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr) __attribute__((alias("EMIT_UNPK_reg")));
 uint32_t *EMIT_UNPK_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
 {
-    uint16_t addend = cache_read_16(ICACHE, (uintptr_t)&(*m68k_ptr)[0]);
+#ifdef __aarch64__
+    uint16_t addend = BE16((*m68k_ptr)[0]);
     uint8_t tmp = -1;
 
     if (opcode & 8)
@@ -136,7 +197,67 @@ uint32_t *EMIT_UNPK_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
     ptr = EMIT_AdvancePC(ptr, 4);
 
     RA_FreeARMRegister(&ptr, tmp);
+#else
+    int16_t addend = BE16((*m68k_ptr)[0]);
+    uint8_t tmp = 0xff;
+    uint8_t hi = 0xff;
 
+    if (opcode & 8)
+    {
+        uint8_t an_src = RA_MapM68kRegister(&ptr, 8 + (opcode & 7));
+        tmp = RA_AllocARMRegister(&ptr);
+
+        if ((opcode & 7) == 7) {
+            *ptr++ = ldrb_offset_preindex(an_src, tmp, -2);
+        }
+        else {
+            *ptr++ = ldrb_offset_preindex(an_src, tmp, -1);
+        }
+
+        RA_SetDirtyM68kRegister(&ptr, 8 + (opcode & 7));
+    }
+    else
+    {
+        tmp = RA_CopyFromM68kRegister(&ptr, opcode & 7);
+        *ptr++ = and_immed(tmp, tmp, 0xff);
+    }
+
+    hi = RA_AllocARMRegister(&ptr);
+    *ptr++ = and_immed(hi, tmp, 0xf0);
+    *ptr++ = lsl_immed(hi, hi, 4);
+    *ptr++ = and_immed(tmp, tmp, 0x0f);
+    *ptr++ = orr_reg(tmp, tmp, hi, 0);
+
+    if (addend != 0)
+    {
+        uint8_t adj = RA_AllocARMRegister(&ptr);
+        *ptr++ = movw_immed_u16(adj, (uint16_t)addend);
+        if (addend < 0) {
+            *ptr++ = movt_immed_u16(adj, 0xffff);
+        }
+        *ptr++ = add_reg(tmp, tmp, adj, 0);
+        RA_FreeARMRegister(&ptr, adj);
+    }
+
+    if (opcode & 8)
+    {
+        uint8_t dst = RA_MapM68kRegister(&ptr, 8 + ((opcode >> 9) & 7));
+        RA_SetDirtyM68kRegister(&ptr, 8 + ((opcode >> 9) & 7));
+        *ptr++ = strh_offset_preindex(dst, tmp, -2);
+    }
+    else
+    {
+        uint8_t dst = RA_MapM68kRegister(&ptr, (opcode >> 9) & 7);
+        RA_SetDirtyM68kRegister(&ptr, (opcode >> 9) & 7);
+        *ptr++ = bfi(dst, tmp, 0, 16);
+    }
+
+    (*m68k_ptr)++;
+    ptr = EMIT_AdvancePC(ptr, 4);
+
+    RA_FreeARMRegister(&ptr, hi);
+    RA_FreeARMRegister(&ptr, tmp);
+#endif
     return ptr;
 }
 
@@ -165,17 +286,33 @@ uint32_t *EMIT_OR_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
 
         switch (size)
         {
-            case 4:
-                *ptr++ = orr_reg(dest, dest, src, LSL, 0);
-                break;
-            case 2:
-                *ptr++ = orr_reg(src, src, dest, LSL, 0);
-                *ptr++ = bfi(dest, src, 0, 16);
-                break;
-            case 1:
-                *ptr++ = orr_reg(src, src, dest, LSL, 0);
-                *ptr++ = bfi(dest, src, 0, 8);
-                break;
+        case 4:
+#ifdef __aarch64__
+            *ptr++ = orr_reg(dest, dest, src, LSL, 0);
+#else
+            *ptr++ = orrs_reg(dest, dest, src, 0);
+#endif
+            break;
+        case 2:
+#ifdef __aarch64__
+            *ptr++ = orr_reg(src, src, dest, LSL, 0);
+#else
+            *ptr++ = lsl_immed(src, src, 16);
+            *ptr++ = orrs_reg(src, src, dest, 16);
+            *ptr++ = lsr_immed(src, src, 16);
+#endif
+            *ptr++ = bfi(dest, src, 0, 16);
+            break;
+        case 1:
+#ifdef __aarch64__
+            *ptr++ = orr_reg(src, src, dest, LSL, 0);
+#else
+            *ptr++ = lsl_immed(src, src, 24);
+            *ptr++ = orrs_reg(src, src, dest, 24);
+            *ptr++ = lsr_immed(src, src, 24);
+#endif
+            *ptr++ = bfi(dest, src, 0, 8);
+            break;
         }
 
         RA_FreeARMRegister(&ptr, src);
@@ -207,8 +344,11 @@ uint32_t *EMIT_OR_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
                 *ptr++ = ldr_offset(dest, tmp, 0);
 
             /* Perform calcualtion */
+#ifdef __aarch64__
             *ptr++ = orr_reg(tmp, tmp, src, LSL, 0);
-
+#else
+            *ptr++ = orrs_reg(tmp, tmp, src, 0);
+#endif
             /* Store back */
             if (mode == 3)
             {
@@ -218,7 +358,6 @@ uint32_t *EMIT_OR_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
             else
                 *ptr++ = str_offset(dest, tmp, 0);
             break;
-        
         case 2:
             if (mode == 4)
             {
@@ -227,10 +366,14 @@ uint32_t *EMIT_OR_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
             }
             else
                 *ptr++ = ldrh_offset(dest, tmp, 0);
-            
             /* Perform calcualtion */
+#ifdef __aarch64__
             *ptr++ = orr_reg(tmp, tmp, src, LSL, 0);
-
+#else
+            *ptr++ = lsl_immed(tmp, tmp, 16);
+            *ptr++ = orrs_reg(tmp, tmp, src, 16);
+            *ptr++ = lsr_immed(tmp, tmp, 16);
+#endif
             /* Store back */
             if (mode == 3)
             {
@@ -240,7 +383,6 @@ uint32_t *EMIT_OR_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
             else
                 *ptr++ = strh_offset(dest, tmp, 0);
             break;
-        
         case 1:
             if (mode == 4)
             {
@@ -251,8 +393,13 @@ uint32_t *EMIT_OR_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
                 *ptr++ = ldrb_offset(dest, tmp, 0);
 
             /* Perform calcualtion */
+#ifdef __aarch64__
             *ptr++ = orr_reg(tmp, tmp, src, LSL, 0);
-
+#else
+            *ptr++ = lsl_immed(tmp, tmp, 24);
+            *ptr++ = orrs_reg(tmp, tmp, src, 24);
+            *ptr++ = lsr_immed(tmp, tmp, 24);
+#endif
             /* Store back */
             if (mode == 3)
             {
@@ -272,6 +419,7 @@ uint32_t *EMIT_OR_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
 
     if (update_mask)
     {
+#ifdef __aarch64__
         switch(size)
         {
             case 4:
@@ -284,7 +432,7 @@ uint32_t *EMIT_OR_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
                 *ptr++ = cmn_reg(31, test_register, LSL, 24);
                 break;
         }
-
+#endif
         uint8_t cc = RA_ModifyCC(&ptr);
         ptr = EMIT_GetNZ00(ptr, cc, &update_mask);
 
@@ -298,7 +446,6 @@ uint32_t *EMIT_OR_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
     return ptr;
 }
 
-// BROKEN!!!!
 uint32_t *EMIT_SBCD_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
 {
     uint8_t update_mask = M68K_GetSRMask(*m68k_ptr - 1);
@@ -313,27 +460,67 @@ uint32_t *EMIT_SBCD_reg(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
     uint8_t tmp_n = RA_AllocARMRegister(&ptr);
     uint8_t cc = RA_ModifyCC(&ptr);
 
-kprintf("[ERROR] SBCD is not yet fixed!!!\n");
-
     /* Extract dest into further temp register (used to check overflow and flags) */
+#ifdef __aarch64__
     *ptr++ = and_immed(tmp_n, dest, 8, 0);
+#else
+    *ptr++ = and_immed(tmp_n, dest, 0xFF);
+#endif
 
+#ifdef __aarch64__
     *ptr++ = and_immed(tmp_a, src, 4, 0);   // Fetch low nibbles
+#else
+    *ptr++ = and_immed(tmp_a, src, 0xF);   // Fetch low nibbles
+#endif
+#ifdef __aarch64__
     *ptr++ = and_immed(tmp_b, dest, 4, 0);
+#else
+    *ptr++ = and_immed(tmp_b, dest, 0xF);
+#endif
 
+#ifdef __aarch64__
     *ptr++ = and_immed(tmp_c, src, 4, 28);  // Fetch high nibbles
+#else
+    *ptr++ = and_immed(tmp_c, src, 0xF0);  // Fetch high nibbles
+    *ptr++ = lsr_immed(tmp_c, tmp_c, 4);  // Shift to low nibble
+#endif
+#ifdef __aarch64__
     *ptr++ = and_immed(tmp_d, dest, 4, 28);
+#else
+    *ptr++ = and_immed(tmp_d, dest, 0xF0);
+    *ptr++ = lsr_immed(tmp_d, tmp_d, 4);
+#endif
 
     // Test X flag
+#ifdef __aarch64__
     *ptr++ = tst_immed(cc, 1, 31 & (32 - SRB_X));   // Sub X
+#else
+    *ptr++ = tst_immed(cc, SR_X);
+#endif
 
     // Subtract nibbles
+#ifdef __aarch64__
     *ptr++ = sub_reg(tmp_a, tmp_b, tmp_a, LSL, 0);
+#else
+    *ptr++ = sub_reg(tmp_a, tmp_b, tmp_a, 0);
+#endif
+#ifdef __aarch64__
     *ptr++ = sub_reg(tmp_c, tmp_d, tmp_c, LSL, 0);
+#else
+    *ptr++ = sub_reg(tmp_c, tmp_d, tmp_c, 0);
+#endif
     
     // Extract 8-bit src into tmp_b and perform subtraction on tmp_n test reg
+#ifdef __aarch64__
     *ptr++ = and_immed(tmp_b, src, 8, 0);
+#else
+    *ptr++ = and_immed(tmp_b, src, 0xFF);
+#endif
+#ifdef __aarch64__
     *ptr++ = sub_reg(tmp_n, tmp_n, tmp_b, LSL, 0);
+#else
+    *ptr++ = sub_reg(tmp_n, tmp_n, tmp_b, 0);
+#endif
 
     // if X was set (NE), decrease lower nibble result by one
     *ptr++ = b_cc(A64_CC_EQ, 3);
@@ -345,10 +532,18 @@ kprintf("[ERROR] SBCD is not yet fixed!!!\n");
     }
 
     // Join nibbles together in tmp_b register
+#ifdef __aarch64__
     *ptr++ = add_reg(tmp_b, tmp_a, tmp_c, LSL, 0);
+#else
+    *ptr++ = add_reg(tmp_b, tmp_a, tmp_c, 0);
+#endif
 
     // If lower libble overflowed, do radix correction
+#ifdef __aarch64__
     *ptr++ = ands_immed(31, tmp_a, 4, 28);
+#else
+    *ptr++ = tst_immed(tmp_a, 0xF);
+#endif
     if (update_mask & SR_XC) {
         *ptr++ = b_cc(A64_CC_EQ, 3);
         *ptr++ = sub_immed(tmp_b, tmp_b, 6);
@@ -360,19 +555,36 @@ kprintf("[ERROR] SBCD is not yet fixed!!!\n");
     }
 
     // Check if result overflowed
+#ifdef __aarch64__
     *ptr++ = ands_immed(31, tmp_n, 1, 24);
+#else
+    *ptr++ = lsr_immed(tmp_a, tmp_n, 24);
+    *ptr++ = tst_immed(tmp_a, 1);
+#endif
     *ptr++ = b_cc(A64_CC_EQ, 2);
     *ptr++ = sub_immed(tmp_b, tmp_b, 0x60);
 
     if (update_mask & SR_XC) {
-        *ptr++ = bic_immed(cc, cc, 1, 31);
+#ifdef __aarch64__
+        *ptr++ = bic_immed(cc, cc, 1, 0);
+#else
+        *ptr++ = bic_immed(cc, cc, 1);
+#endif
+#ifdef __aarch64__
         *ptr++ = ands_immed(31, tmp_d, 2, 24);
+#else
+        *ptr++ = lsr_immed(tmp_a, tmp_d, 24);
+        *ptr++ = tst_immed(tmp_a, 3);
+#endif
         *ptr++ = b_cc(A64_CC_EQ, 2);
-        *ptr++ = orr_immed(cc, cc, 1, 31);
+#ifdef __aarch64__
+        *ptr++ = orr_immed(cc, cc, 1, 0);
+#else
+        *ptr++ = orr_immed(cc, cc, 1);
+#endif
 
         if (update_mask & SR_X) {
-            *ptr++ = ror(0, cc, 1);
-            *ptr++ = bfi(cc, 0, 4, 1);
+            *ptr++ = bfi(cc, cc, 4, 1);
         }
     }
 
@@ -380,9 +592,17 @@ kprintf("[ERROR] SBCD is not yet fixed!!!\n");
     *ptr++ = bfi(dest, tmp_b, 0, 8);
 
     if (update_mask & SR_Z) {
+#ifdef __aarch64__
         *ptr++ = ands_immed(31, tmp_b, 8, 0);
+#else
+        *ptr++ = tst_immed(tmp_b, 0xFF);
+#endif
         *ptr++ = b_cc(A64_CC_EQ, 2);
+#ifdef __aarch64__
         *ptr++ = bic_immed(cc, cc, 1, 31 & (32 - SRB_Z));
+#else
+        *ptr++ = bic_immed(cc, cc, (1 << (31 & (32 - SRB_Z))));
+#endif
     }
 
     RA_FreeARMRegister(&ptr, tmp_a);
@@ -396,7 +616,7 @@ kprintf("[ERROR] SBCD is not yet fixed!!!\n");
     return ptr;
 }
 
-// BROKEN!!!!
+
 uint32_t *EMIT_SBCD_mem(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
 {
     uint8_t update_mask = M68K_GetSRMask(*m68k_ptr - 1);
@@ -407,8 +627,6 @@ uint32_t *EMIT_SBCD_mem(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
     uint8_t tmp_n = RA_AllocARMRegister(&ptr);
     uint8_t src = RA_AllocARMRegister(&ptr);
     uint8_t cc = RA_ModifyCC(&ptr);
-
-kprintf("[ERROR] SBCD mem is not yet fixed!\n");
 
     uint8_t an_src = RA_MapM68kRegister(&ptr, 8 + (opcode & 7));
     uint8_t an_dest = RA_MapM68kRegister(&ptr, 8 + ((opcode >> 9) & 7));
@@ -423,21 +641,55 @@ kprintf("[ERROR] SBCD mem is not yet fixed!\n");
     else
         *ptr++ = ldrb_offset_preindex(an_dest, tmp_n, -1);
 
+#ifdef __aarch64__
     *ptr++ = and_immed(tmp_a, src, 4, 0);   // Fetch low nibbles
+#else
+    *ptr++ = and_immed(tmp_a, src, 0xF);   // Fetch low nibbles
+#endif
+#ifdef __aarch64__
     *ptr++ = and_immed(tmp_b, tmp_n, 4, 0);
+#else
+    *ptr++ = and_immed(tmp_b, tmp_n, 0xF);
+#endif
 
+#ifdef __aarch64__
     *ptr++ = and_immed(tmp_c, src, 4, 28);  // Fetch high nibbles
+#else
+    *ptr++ = and_immed(tmp_c, src, 0xF0);  // Fetch high nibbles
+    *ptr++ = lsr_immed(tmp_c, tmp_c, 4);  // Shift to low nibble
+#endif
+#ifdef __aarch64__
     *ptr++ = and_immed(tmp_d, tmp_n, 4, 28);
+#else
+    *ptr++ = and_immed(tmp_d, tmp_n, 0xF0);
+    *ptr++ = lsr_immed(tmp_d, tmp_d, 4);
+#endif
 
     // Test X flag
+#ifdef __aarch64__
     *ptr++ = tst_immed(cc, 1, 31 & (32 - SRB_X));   // Sub X
+#else
+    *ptr++ = tst_immed(cc, SR_X);
+#endif
 
     // Subtract nibbles
+#ifdef __aarch64__
     *ptr++ = sub_reg(tmp_a, tmp_b, tmp_a, LSL, 0);
+#else
+    *ptr++ = sub_reg(tmp_a, tmp_b, tmp_a, 0);
+#endif
+#ifdef __aarch64__
     *ptr++ = sub_reg(tmp_c, tmp_d, tmp_c, LSL, 0);
+#else
+    *ptr++ = sub_reg(tmp_c, tmp_d, tmp_c, 0);
+#endif
     
     // Perform subtraction on tmp_n test reg
+#ifdef __aarch64__
     *ptr++ = sub_reg(tmp_n, tmp_n, src, LSL, 0);
+#else
+    *ptr++ = sub_reg(tmp_n, tmp_n, src, 0);
+#endif
 
     // if X was set (NE), decrease lower nibble result by one
     *ptr++ = b_cc(A64_CC_EQ, 3);
@@ -449,10 +701,18 @@ kprintf("[ERROR] SBCD mem is not yet fixed!\n");
     }
 
     // Join nibbles together in tmp_b register
+#ifdef __aarch64__
     *ptr++ = add_reg(tmp_b, tmp_a, tmp_c, LSL, 0);
+#else
+    *ptr++ = add_reg(tmp_b, tmp_a, tmp_c, 0);
+#endif
 
     // If lower libble overflowed, do radix correction
+#ifdef __aarch64__
     *ptr++ = ands_immed(31, tmp_a, 4, 28);
+#else
+    *ptr++ = tst_immed(tmp_a, 0xF);
+#endif
     if (update_mask & SR_XC) {
         *ptr++ = b_cc(A64_CC_EQ, 3);
         *ptr++ = sub_immed(tmp_b, tmp_b, 6);
@@ -464,19 +724,36 @@ kprintf("[ERROR] SBCD mem is not yet fixed!\n");
     }
 
     // Check if result overflowed
+#ifdef __aarch64__
     *ptr++ = ands_immed(31, tmp_n, 1, 24);
+#else
+    *ptr++ = lsr_immed(tmp_a, tmp_n, 24);
+    *ptr++ = tst_immed(tmp_a, 1);
+#endif
     *ptr++ = b_cc(A64_CC_EQ, 2);
     *ptr++ = sub_immed(tmp_b, tmp_b, 0x60);
 
     if (update_mask & SR_XC) {
-        *ptr++ = bic_immed(cc, cc, 1, 31);
+#ifdef __aarch64__
+        *ptr++ = bic_immed(cc, cc, 1, 0);
+#else
+        *ptr++ = bic_immed(cc, cc, 1);
+#endif
+#ifdef __aarch64__
         *ptr++ = ands_immed(31, tmp_d, 2, 24);
+#else
+        *ptr++ = lsr_immed(tmp_a, tmp_d, 24);
+        *ptr++ = tst_immed(tmp_a, 3);
+#endif
         *ptr++ = b_cc(A64_CC_EQ, 2);
-        *ptr++ = orr_immed(cc, cc, 1, 31);
+#ifdef __aarch64__
+        *ptr++ = orr_immed(cc, cc, 1, 0);
+#else
+        *ptr++ = orr_immed(cc, cc, 1);
+#endif
 
         if (update_mask & SR_X) {
-            *ptr++ = ror(0, cc, 1);
-            *ptr++ = bfi(cc, 0, 4, 1);
+            *ptr++ = bfi(cc, cc, 4, 1);
         }
     }
 
@@ -484,9 +761,17 @@ kprintf("[ERROR] SBCD mem is not yet fixed!\n");
     *ptr++ = strb_offset(an_dest, tmp_b, 0);
 
     if (update_mask & SR_Z) {
+#ifdef __aarch64__
         *ptr++ = ands_immed(31, tmp_b, 8, 0);
+#else
+        *ptr++ = tst_immed(tmp_b, 0xFF);
+#endif
         *ptr++ = b_cc(A64_CC_EQ, 2);
+#ifdef __aarch64__
         *ptr++ = bic_immed(cc, cc, 1, 31 & (32 - SRB_Z));
+#else
+        *ptr++ = bic_immed(cc, cc, (1 << (31 & (32 - SRB_Z))));
+#endif
     }
 
     RA_FreeARMRegister(&ptr, tmp_a);
@@ -497,6 +782,65 @@ kprintf("[ERROR] SBCD mem is not yet fixed!\n");
     RA_FreeARMRegister(&ptr, src);
 
     ptr = EMIT_AdvancePC(ptr, 2);
+
+#if 0
+    /* Operation */
+    *ptr++ = ubfx(tmp_a, src, 0, 4);
+    *ptr++ = ubfx(tmp_b, dest, 0, 4);
+    *ptr++ = sub_reg(tmp_a, tmp_a, tmp_b, LSL, 0);
+    *ptr++ = tst_immed(cc, 1, 31 & (32 - SRB_X));
+    *ptr++ = b_cc(A64_CC_EQ, 2);
+    *ptr++ = sub_immed(tmp_a, tmp_a, 1);
+    *ptr++ = cmp_immed(tmp_a, 0);
+    *ptr++ = b_cc(A64_CC_HI, 2);
+    *ptr++ = add_immed(tmp_a, tmp_a, 9);
+    *ptr++ = bfi(dest, tmp_a, 0, 4);
+    *ptr++ = ubfx(tmp_a, src, 4, 4);
+    *ptr++ = ubfx(tmp_b, dest, 4, 4);
+    *ptr++ = sub_reg(tmp_a, tmp_a, tmp_b, LSL, 0);
+    *ptr++ = csinv(tmp_a, tmp_a, 31, A64_CC_HI);
+    *ptr++ = cmp_immed(tmp_a, 0);
+    *ptr++ = b_cc(A64_CC_HI, 2);
+    *ptr++ = add_immed(tmp_a, tmp_a, 9);
+    *ptr++ = bfi(dest, tmp_a, 4, 4);
+    *ptr++ = mov_reg(tmp_a, dest);
+
+    /* Storing result */
+    *ptr++ = strb_offset(an_dest, dest, 0);
+
+    if (update_mask & SR_XC)
+    {
+        /* if A64_CC_LT then there was a carry */
+        *ptr++ = cset(tmp_b, A64_CC_LT);
+        *ptr++ = bfi(cc, tmp_b, 0, 1);
+        /* update X flag*/
+        *ptr++ = bfi(cc, cc, 4, 1);
+    }
+    if (update_mask & SR_NZ)
+    {
+        *ptr++ = cmn_reg(31, tmp_a, LSL, 24);
+
+        if (update_mask & SR_Z)
+        {
+            *ptr++ = b_cc(A64_CC_EQ, 2);
+    #ifdef __aarch64__
+        *ptr++ = bic_immed(cc, cc, 1, 31 & (32 - SRB_Z));
+#else
+        *ptr++ = bic_immed(cc, cc, (1 << (31 & (32 - SRB_Z))));
+#endif
+        }
+        if (update_mask & SR_N)
+        {
+            *ptr++ = bic_immed(cc, cc, 1, 31 & (32 - SRB_N));
+            ptr = EMIT_SetFlagsConditional(ptr, cc, SR_N, A64_CC_MI);
+        }
+    }
+
+    RA_FreeARMRegister(&ptr, tmp_a);
+    RA_FreeARMRegister(&ptr, tmp_b);
+    RA_FreeARMRegister(&ptr, src);
+    RA_FreeARMRegister(&ptr, dest);
+#endif
 
     return ptr;
 }
@@ -538,7 +882,7 @@ static struct OpcodeDef InsnTable[512] = {
 
 uint32_t *EMIT_line8(uint32_t *ptr, uint16_t **m68k_ptr, uint16_t *insn_consumed)
 {
-    uint16_t opcode = cache_read_16(ICACHE, (uintptr_t)&(*m68k_ptr)[0]);
+    uint16_t opcode = BE16((*m68k_ptr)[0]);
     (*m68k_ptr)++;
     *insn_consumed = 1;
 
@@ -549,11 +893,6 @@ uint32_t *EMIT_line8(uint32_t *ptr, uint16_t **m68k_ptr, uint16_t *insn_consumed
     {
         ptr = EMIT_FlushPC(ptr);
         ptr = EMIT_InjectDebugString(ptr, "[JIT] opcode %04x at %08x not implemented\n", opcode, *m68k_ptr - 1);
-        *ptr++ = svc(0x100);
-        *ptr++ = svc(0x101);
-        *ptr++ = svc(0x103);
-        *ptr++ = (uint32_t)(uintptr_t)(*m68k_ptr - 8);
-        *ptr++ = 48;
         ptr = EMIT_Exception(ptr, VECTOR_ILLEGAL_INSTRUCTION, 0);
         *ptr++ = INSN_TO_LE(0xffffffff);
     }
@@ -577,7 +916,7 @@ uint32_t GetSR_Line8(uint16_t opcode)
 
 int M68K_GetLine8Length(uint16_t *insn_stream)
 {
-    uint16_t opcode = cache_read_16(ICACHE, (uintptr_t)insn_stream);
+    uint16_t opcode = BE16(*insn_stream);
     
     int length = 0;
     int need_ea = 0;

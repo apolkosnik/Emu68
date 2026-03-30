@@ -80,12 +80,25 @@ static int int_strlen(char *buf)
     return len;
 }
 
-static void int_itoa(char *buf, char base, uintptr_t value, char zero_pad, int precision, int size_mod, char big, int alternate_form, int neg, char sign)
+static void int_itoa(char *buf, char base, uintmax_t value, char zero_pad, int precision, int size_mod, char big, int alternate_form, int neg, char sign)
 {
     int length = 0;
 
     do {
-        char c = value % base;
+        uintmax_t quotient;
+        uintmax_t remainder;
+        char c;
+
+#if UINTPTR_MAX < UINTMAX_MAX
+        struct Result64 div = uldiv((uint64_t)value, (uint64_t)base);
+        quotient = div.q;
+        remainder = div.r;
+#else
+        quotient = value / base;
+        remainder = value % base;
+#endif
+
+        c = remainder;
 
         if (c >= 10) {
             if (big)
@@ -96,7 +109,7 @@ static void int_itoa(char *buf, char base, uintptr_t value, char zero_pad, int p
         else
             c += '0';
 
-        value = value / base;
+        value = quotient;
         buf[length++] = c;
     } while(value != 0);
 
@@ -233,8 +246,8 @@ void vkprintf_pc(putc_func putc_f, void *putc_data, const char * restrict format
         char *str;
         char sign = 0;
         char leftalign = 0;
-        uintptr_t value = 0;
-        intptr_t ivalue = 0;
+        uintmax_t value = 0;
+        intmax_t ivalue = 0;
 
         char big = 0;
 
@@ -301,8 +314,12 @@ void vkprintf_pc(putc_func putc_f, void *putc_data, const char * restrict format
                 if (c == 'l')
                 {
                     c = *format++;
+                    length_mod = 8;
                 }
-                length_mod = 8;
+                else
+                {
+                    length_mod = 4;
+                }
             }
             else if (c == 'j')
             {
@@ -329,6 +346,8 @@ void vkprintf_pc(putc_func putc_f, void *putc_data, const char * restrict format
                     break;
 
                 case 'f':
+                case 'e':
+                case 'E':
                     int_ftoa(tmpbuf, va_arg(args, double));
                     str = tmpbuf;
                     size_mod -= int_strlen(str);
@@ -352,6 +371,9 @@ void vkprintf_pc(putc_func putc_f, void *putc_data, const char * restrict format
                     /* fallthrough */
                 case 'x':
                     switch (length_mod) {
+                        case 4:
+                            value = va_arg(args, unsigned long);
+                            break;
                         case 8:
                             value = va_arg(args, uint64_t);
                             break;
@@ -384,6 +406,9 @@ void vkprintf_pc(putc_func putc_f, void *putc_data, const char * restrict format
 
                 case 'u':
                     switch (length_mod) {
+                        case 4:
+                            value = va_arg(args, unsigned long);
+                            break;
                         case 8:
                             value = va_arg(args, uint64_t);
                             break;
@@ -417,6 +442,9 @@ void vkprintf_pc(putc_func putc_f, void *putc_data, const char * restrict format
                 case 'd':
                 case 'i':
                     switch (length_mod) {
+                        case 4:
+                            ivalue = va_arg(args, long);
+                            break;
                         case 8:
                             ivalue = va_arg(args, int64_t);
                             break;
@@ -434,9 +462,9 @@ void vkprintf_pc(putc_func putc_f, void *putc_data, const char * restrict format
                             break;
                     }
                     if (ivalue < 0)
-                        int_itoa(tmpbuf, 10, -ivalue, zero_pad, precision, size_mod, 0, alternate_form, 1, sign);
+                        int_itoa(tmpbuf, 10, 0 - (uintmax_t)ivalue, zero_pad, precision, size_mod, 0, alternate_form, 1, sign);
                     else
-                        int_itoa(tmpbuf, 10, ivalue, zero_pad, precision, size_mod, 0, alternate_form, 0, sign);
+                        int_itoa(tmpbuf, 10, (uintmax_t)ivalue, zero_pad, precision, size_mod, 0, alternate_form, 0, sign);
                     str = tmpbuf;
                     size_mod -= int_strlen(str);
                     if (!leftalign)
@@ -452,6 +480,9 @@ void vkprintf_pc(putc_func putc_f, void *putc_data, const char * restrict format
 
                 case 'o':
                     switch (length_mod) {
+                        case 4:
+                            value = va_arg(args, unsigned long);
+                            break;
                         case 8:
                             value = va_arg(args, uint64_t);
                             break;
@@ -519,6 +550,7 @@ void kprintf_pc(putc_func putc_f, void *putc_data, const char * restrict format,
 
 void arm_flush_cache(uintptr_t addr, uint32_t length)
 {
+#ifdef __aarch64__
     int line_size = 0;
     uintptr_t top_addr = addr + length;
 
@@ -535,10 +567,21 @@ void arm_flush_cache(uintptr_t addr, uint32_t length)
             addr += line_size;
     }
     __asm__ __volatile__("dsb sy");
+#else
+    length = (length + 31) & ~31;
+    while (length)
+    {
+        __asm__ __volatile__("mcr p15, 0, %0, c7, c14, 1"::"r"(addr));
+        addr += 32;
+        length -= 32;
+    }
+    __asm__ __volatile__("mcr p15, 0, %0, c7, c10, 4"::"r"(addr));
+#endif
 }
 
 void arm_icache_invalidate(uintptr_t addr, uint32_t length)
 {
+#ifdef __aarch64__
     int line_size = 0;
     uintptr_t top_addr = addr + length;
 
@@ -556,10 +599,21 @@ void arm_icache_invalidate(uintptr_t addr, uint32_t length)
             addr += line_size;
     }
     __asm__ __volatile__("dsb ish; isb sy");
+#else
+    length = (length + 31) & ~31;
+    while (length)
+    {
+        __asm__ __volatile__("mcr p15, 0, %0, c7, c5, 1"::"r"(addr));
+        addr += 32;
+        length -= 32;
+    }
+    __asm__ __volatile__("mcr p15, 0, %0, c7, c10, 4"::"r"(addr));
+#endif
 }
 
 void arm_dcache_invalidate(uintptr_t addr, uint32_t length)
 {
+#ifdef __aarch64__
     int line_size = 0;
     uintptr_t top_addr = addr + length;
 
@@ -577,6 +631,16 @@ void arm_dcache_invalidate(uintptr_t addr, uint32_t length)
             addr += line_size;
     }
     __asm__ __volatile__("dsb sy");
+#else
+    length = (length + 31) & ~31;
+    while (length)
+    {
+        __asm__ __volatile__("mcr p15, 0, %0, c7, c6, 1"::"r"(addr));
+        addr += 32;
+        length -= 32;
+    }
+    __asm__ __volatile__("mcr p15, 0, %0, c7, c10, 4"::"r"(addr));
+#endif
 }
 
 void putc_s(void *data, char c)

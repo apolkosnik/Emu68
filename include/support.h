@@ -10,10 +10,9 @@
 #ifndef _SUPPORT_H
 #define _SUPPORT_H
 
+#include <stddef.h>
 #include <stdint.h>
 #include <stdarg.h>
-
-#include "A64.h"
 
 #ifdef NULL
 #undef NULL
@@ -62,8 +61,6 @@ static inline uint16_t LE16(uint16_t x) { return x; }
 
 #endif
 
-typedef unsigned long size_t;
-
 static inline uint32_t rd32le(uintptr_t iobase) {
     return LE32(*(volatile uint32_t *)(iobase));
 }
@@ -105,11 +102,19 @@ static inline void wr8(uintptr_t iobase, uint8_t value) {
 }
 
 static inline void dsb() {
+#ifdef __aarch64__
     asm volatile ("dsb sy");
+#else
+    asm volatile ("mcr p15,#0,%[zero],c7,c10,#4" : : [zero] "r" (0));
+#endif
 }
 
 static inline void dmb() {
+#ifdef __aarch64__
     asm volatile ("dmb sy");
+#else
+    asm volatile ("mcr p15,#0,%[zero],c7,c10,#5" : : [zero] "r" (0));
+#endif
 }
 
 typedef void (*putc_func)(void *data, char c);
@@ -175,5 +180,12 @@ struct Result64 sldiv(int64_t n, int64_t d);
 
 #define likely(x)      __builtin_expect(!!(x), 1) 
 #define unlikely(x)    __builtin_expect(!!(x), 0)
+
+#ifdef __aarch64__
+#include "A64.h"
+#else
+#include "ARM.h"
+#include "ArchCompat.h"
+#endif
 
 #endif /* _SUPPORT_H */

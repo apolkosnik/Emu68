@@ -1,4 +1,9 @@
 function(download_raspi_firmware)
+    if(EMU68_SKIP_FIRMWARE_DOWNLOADS)
+        message("-- Skipping RasPi firmware downloads")
+        return()
+    endif()
+
     set(PI_FILES
         LICENCE.broadcom
         bootcode.bin
@@ -6,6 +11,7 @@ function(download_raspi_firmware)
         fixup4.dat
         start.elf
         start4.elf
+        bcm2709-rpi-2-b.dtb
         bcm2711-rpi-4-b.dtb
         bcm2711-rpi-400.dtb
         bcm2711-rpi-cm4.dtb

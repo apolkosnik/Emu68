@@ -16,7 +16,11 @@ static inline void spinlock_init(spinlock_t *s) {
 }
 
 static inline void spinlock_acquire(spinlock_t *s) {
+#ifdef __aarch64__
     __asm__ __volatile__("sevl");
+#else
+    __asm__ __volatile__("sev");
+#endif
     while (__atomic_test_and_set(&s->lock, __ATOMIC_ACQUIRE))
         __asm__ __volatile__("wfe");
 }

@@ -1,0 +1,26 @@
+/dts-v1/;
+
+/ {
+    compatible = "raspberrypi,2-model-b", "brcm,bcm2709";
+    model = "QEMU Raspberry Pi 2B smoke test";
+    #address-cells = <1>;
+    #size-cells = <1>;
+
+    chosen {
+        bootargs = "@EMU68_BOOTARGS@";
+        linux,initrd-start = <0x01800000>;
+        linux,initrd-end = <@EMU68_INITRD_END@>;
+    };
+
+    memory@0 {
+        device_type = "memory";
+        reg = <0x00000000 0x40000000>;
+    };
+
+    soc {
+        compatible = "simple-bus";
+        #address-cells = <1>;
+        #size-cells = <1>;
+        ranges = <0x7e000000 0x3f000000 0x01000000>;
+    };
+};

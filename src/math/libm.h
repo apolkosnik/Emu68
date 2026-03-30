@@ -108,13 +108,25 @@ static __inline unsigned long long __DOUBLE_BITS(double __f)
 
 static inline double sqrt(double x)
 {
+#if defined(__aarch64__)
     asm volatile("fsqrt %d0, %d0":"+w"(x):"0"(x));
+#elif defined(__arm__)
+    asm volatile("vsqrt.f64 %P0, %P1" : "=w"(x) : "w"(x));
+#else
+    return __builtin_sqrt(x);
+#endif
     return x;
 }
 
 static inline double fabs(double x)
 {
+#if defined(__aarch64__)
     asm volatile("fabs %d0, %d0":"+w"(x):"0"(x));
+#elif defined(__arm__)
+    asm volatile("vabs.f64 %P0, %P1" : "=w"(x) : "w"(x));
+#else
+    return __builtin_fabs(x);
+#endif
     return x;
 }
 

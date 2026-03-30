@@ -37,7 +37,7 @@ void my_putc(void *data, const char c)
 {
     struct putc_data *p = data;
 
-    if (p->written < p->limit)
+    if (p->limit > 0 && p->written + 1 < p->limit)
     {
         p->buffer[p->written] = c;
         p->buffer[p->written+1] = 0;
@@ -53,10 +53,84 @@ int my_vsnprintf(char *str, size_t size, const char *format, va_list ap)
     p.limit = size;
     p.written = 0;
 
+    if (size > 0)
+        str[0] = 0;
+
     vkprintf_pc(my_putc, &p, format, ap);
 
     return p.written;
 }
+
+#ifdef __aarch64__
+static const char *format_arm_op_str(const cs_insn *insn, char *buffer, size_t buffer_size)
+{
+    char last_char = 0;
+    size_t p = 0;
+    static const char *regnames[] = {
+        "A0", "A1", "A2", "A3", "A4", "PC", "D0", "D1", "D2", "D3", "D4", "D5", "D6", "D7", "A5", "A6", "A7"
+    };
+
+    if (buffer_size == 0)
+        return "";
+
+    for (int j=0; j < 160 && p + 1 < buffer_size; j++) {
+        char size = 0;
+
+        if (insn->op_str[j] == 0)
+            break;
+
+        if (insn->op_str[j] == 'w')
+            size = 'w';
+        else if (insn->op_str[j] == 'x' && last_char != '0')
+            size = 'x';
+
+        if (size) {
+            char c1 = insn->op_str[j + 1];
+            char c2 = insn->op_str[j + 2];
+
+            if (
+                (c1 >= '0' && c1 <= '9' && c2 >= '0' && c2 <= '9') &&
+                (insn->op_str[j + 3] < '0' || insn->op_str[j + 3] > '9') &&
+                (insn->op_str[j + 3] < 'a' || insn->op_str[j + 3] > 'f')
+            )
+            {
+                char num = (c1-'0')*10 + (c2-'0');
+
+                if (num >= 13 && num <= 29)
+                {
+                    const char *src = regnames[num - 13];
+
+                    while (*src != 0 && p + 1 < buffer_size)
+                        buffer[p++] = *src++;
+
+                    if (size == 'x' && p + 3 < buffer_size) {
+                        buffer[p++] = ':';
+                        buffer[p++] = '6';
+                        buffer[p++] = '4';
+                    }
+
+                    j += 2;
+                    last_char = insn->op_str[j];
+                    continue;
+                }
+            }
+        }
+
+        buffer[p++] = insn->op_str[j];
+        last_char = insn->op_str[j];
+    }
+
+    buffer[p] = 0;
+    return buffer;
+}
+#else
+static const char *format_arm_op_str(const cs_insn *insn, char *buffer, size_t buffer_size)
+{
+    (void)buffer;
+    (void)buffer_size;
+    return insn->op_str;
+}
+#endif
 
 void disasm_init()
 {
@@ -82,7 +156,11 @@ void disasm_open()
 {
     cs_err err;
     err = cs_open(CS_ARCH_M68K, CS_MODE_BIG_ENDIAN | CS_MODE_M68K_040, &h_m68k);
+#ifdef __aarch64__
     err = cs_open(CS_ARCH_ARM64, CS_MODE_ARM, &h_arm);
+#else
+    err = cs_open(CS_ARCH_ARM, CS_MODE_ARM, &h_arm);
+#endif
     (void)err;
 }
 
@@ -98,7 +176,7 @@ void disasm_print(uint16_t *m68k_addr, uint16_t m68k_count, uint32_t *arm_addr, 
     cs_insn *insn_arm;
     size_t count_m68k = 0;
     size_t count_arm = 0;
-	char fixed_op_str[200];
+    char fixed_op_str[200];
 
     if (m68k_addr)
         count_m68k = cs_disasm(h_m68k, (const uint8_t *)m68k_addr, 20*m68k_count, (uintptr_t)m68k_addr, m68k_count, &insn_m68k);
@@ -107,7 +185,8 @@ void disasm_print(uint16_t *m68k_addr, uint16_t m68k_count, uint32_t *arm_addr, 
 
     for (size_t i=0; i < count_m68k; i++)
     {
-        kprintf("[JIT] %08x: %7s %21s", insn_m68k[i].address, insn_m68k[i].mnemonic, insn_m68k[i].op_str);
+        kprintf("[JIT] %08llx: %7s %21s", (unsigned long long)insn_m68k[i].address,
+            insn_m68k[i].mnemonic, insn_m68k[i].op_str);
         if (i != count_m68k - 1)
             kprintf("\n");
     }
@@ -117,69 +196,10 @@ void disasm_print(uint16_t *m68k_addr, uint16_t m68k_count, uint32_t *arm_addr, 
 
     for (size_t i=0; i < count_arm; i++)
     {
-		char last_char = 0;
-		char size = 0;
-		char num = 0;
-		int p = 0;
-		static const char *regnames[] = {
-			"A0", "A1", "A2", "A3", "A4", "PC", "D0", "D1", "D2", "D3", "D4", "D5", "D6", "D7", "A5", "A6", "A7"
-		};
-
-		for (int j=0; j < 160; j++) {
-			if (insn_arm[i].op_str[j] == 0) {
-				fixed_op_str[p] = 0;
-				break;
-			}
-			
-			if (insn_arm[i].op_str[j] == 'w')
-				size = 'w';
-			else if (insn_arm[i].op_str[j] == 'x' && last_char != '0')
-				size = 'x';
-			else
-				size = 0;
-
-			if (size) {
-				char c1 = insn_arm[i].op_str[j + 1];
-				char c2 = insn_arm[i].op_str[j + 2];
-
-				if (
-					(c1 >= '0' && c1 <= '9' && c2 >= '0' && c2 <= '9') &&
-					(insn_arm[i].op_str[j + 3] < '0' || insn_arm[i].op_str[j + 3] > '9') &&
-					(insn_arm[i].op_str[j + 3] < 'a' || insn_arm[i].op_str[j + 3] > 'f'))
-				{
-					num = (c1-'0')*10 + (c2-'0');
-					const char *src;
-
-					if (num < 13 || num > 29) {
-						size = 0;
-					}
-					else {
-						src = regnames[num - 13];
-						fixed_op_str[p++] = *src++;
-						fixed_op_str[p++] = *src++;
-
-						if (size == 'x') {
-							fixed_op_str[p++] = ':';
-							fixed_op_str[p++] = '6';
-							fixed_op_str[p++] = '4';
-						}
-
-						j += 2;
-					}
-				}
-				else size = 0;
-			}
-
-			if (!size) {
-				fixed_op_str[p++] = insn_arm[i].op_str[j];
-			}
-
-			last_char = insn_arm[i].op_str[j];
-		}
-
         if (i > 0)
             kprintf("[JIT]                                        ");
-        kprintf("-> %08x: %7s %s\n", insn_arm[i].address, insn_arm[i].mnemonic, fixed_op_str); /*insn_arm[i].op_str);*/
+        kprintf("-> %08llx: %7s %s\n", (unsigned long long)insn_arm[i].address, insn_arm[i].mnemonic,
+            format_arm_op_str(&insn_arm[i], fixed_op_str, sizeof(fixed_op_str)));
     }
 
     if (count_m68k)

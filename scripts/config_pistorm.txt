@@ -1,7 +1,7 @@
 # Sample config.txt file for booting Emu68 with Pistorm
 kernel=Emu68-@VARIANT@
 disable_splash=1
-arm_64bit=1
+arm_64bit=@EMU68_ARM_64BIT@
 
 # Limit total memory size to 2GB for now. Necessary for CM4/Pi4
 total_mem=2048
