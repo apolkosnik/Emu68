@@ -20,10 +20,37 @@
 #endif
 
 static int serial_up = 0;
+static int uart_console = 0;
 
 #define ARM_PERIIOBASE ((intptr_t)io_base)
 
 #ifdef PISTORM
+
+static inline void waitSerOUT(void *io_base)
+{
+    (void)io_base;
+
+    while(1)
+    {
+       if ((rd32le(PL011_0_BASE + PL011_FR) & PL011_FR_TXFF) == 0) break;
+    }
+}
+
+static inline void putByte_uart(void *io_base, char chr)
+{
+    if (serial_up)
+    {
+        waitSerOUT(io_base);
+
+        if (chr == '\n')
+        {
+            wr32le(PL011_0_BASE + PL011_DR, '\r');
+            waitSerOUT(io_base);
+        }
+        wr32le(PL011_0_BASE + PL011_DR, (uint8_t)chr);
+        waitSerOUT(io_base);
+    }
+}
 
 uint8_t *q_buffer;
 volatile uint64_t q_head;
@@ -57,6 +84,12 @@ int fast_serial = 0;
 void putByte(void *io_base, char chr)
 {
     (void)io_base;
+
+    if (uart_console)
+    {
+        putByte_uart(io_base, chr);
+        return;
+    }
 
     if (redirect)
     {
@@ -422,12 +455,59 @@ void init_display(struct Size dimensions, void **framebuffer, uint32_t *pitch)
 #define GPPUDCLK0                                       (GPIO_BASE + 0x98)
 
 #ifdef PISTORM
+static void setup_pl011_serial(void)
+{
+    const uintptr_t pl011_base = 0xf2000000 + 0x201000;
+    const uintptr_t gpfsel1 = 0xf2000000 + 0x200004;
+    const uintptr_t gppud = 0xf2000000 + 0x200094;
+    const uintptr_t gppudclk0 = 0xf2000000 + 0x200098;
+    unsigned int uartvar;
+    unsigned const int uartbaud = 115200;
+    unsigned int uartclock;
+    unsigned int uartdivint;
+    unsigned int uartdivfrac;
+
+    uartclock = get_clock_rate(2);
+
+    wr32le(pl011_base + PL011_CR, 0);
+
+    uartvar = rd32le(gpfsel1);
+    uartvar &= ~(7 << 12);
+    uartvar |= 4 << 12;
+    uartvar &= ~(7 << 15);
+    uartvar |= 4 << 15;
+    wr32le(gpfsel1, uartvar);
+
+    wr32le(gppud, 0);
+
+    for (uartvar = 0; uartvar < 150; uartvar++) asm volatile ("nop");
+
+    wr32le(gppudclk0, (1 << 14) | (1 << 15));
+
+    for (uartvar = 0; uartvar < 150; uartvar++) asm volatile ("nop");
+
+    wr32le(gppudclk0, 0);
+
+    wr32le(pl011_base + PL011_ICR, PL011_ICR_FLAGS);
+    uartdivint = PL011_BAUDINT(uartbaud, uartclock);
+    wr32le(pl011_base + PL011_IBRD, uartdivint);
+    uartdivfrac = PL011_BAUDFRAC(uartbaud, uartclock);
+    wr32le(pl011_base + PL011_FBRD, uartdivfrac);
+    wr32le(pl011_base + PL011_LCRH, PL011_LCRH_WLEN8 | PL011_LCRH_FEN);
+    wr32le(pl011_base + PL011_CR, PL011_CR_UARTEN | PL011_CR_TXE | PL011_CR_RXE);
+
+    for (uartvar = 0; uartvar < 150; uartvar++) asm volatile ("nop");
+}
+#endif
+
+#ifdef PISTORM
 
 void setup_serial()
 {
     of_node_t *e = NULL;
 
     serial_up = 1;
+    uart_console = 0;
 
     e = dt_find_node("/chosen");
     if (e)
@@ -435,7 +515,12 @@ void setup_serial()
         of_property_t * prop = dt_find_property(e, "bootargs");
         if (prop)
         {
-            if (strstr(prop->op_value, "fast_serial")) {
+            if (strstr(prop->op_value, "console=ttyAMA0")) {
+                uart_console = 1;
+                fast_serial = 0;
+                setup_pl011_serial();
+            }
+            else if (strstr(prop->op_value, "fast_serial")) {
                 fast_serial = 1;
                 fastSerial_init();
             }
