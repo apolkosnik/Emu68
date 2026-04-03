@@ -270,15 +270,18 @@ uint32_t *EMIT_SUBI(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
                 break;
 #else
             case 4:
-                *ptr++ = adds_reg(dest, dest, immed, 0);
+                if (immediate)
+                    *ptr++ = subs_immed(dest, dest, u32);
+                else
+                    *ptr++ = subs_reg(dest, dest, immed, 0);
                 break;
             case 2:
-                *ptr++ = adds_reg(immed, immed, dest, 16);
+                *ptr++ = rsbs_reg(immed, immed, dest, 16);
                 *ptr++ = lsr_immed(immed, immed, 16);
                 *ptr++ = bfi(dest, immed, 0, 16);
                 break;
             case 1:
-                *ptr++ = adds_reg(immed, immed, dest, 24);
+                *ptr++ = rsbs_reg(immed, immed, dest, 24);
                 *ptr++ = lsr_immed(immed, immed, 24);
                 *ptr++ = bfi(dest, immed, 0, 8);
                 break;
@@ -317,16 +320,19 @@ uint32_t *EMIT_SUBI(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
             else
                 *ptr++ = subs_reg(immed, tmp, immed, LSL, 0);
 #else
-            *ptr++ = adds_reg(immed, immed, tmp, 0);
+            if (immediate)
+                *ptr++ = subs_immed(tmp, tmp, u32);
+            else
+                *ptr++ = subs_reg(tmp, tmp, immed, 0);
 #endif
             /* Store back */
             if (mode == 3)
             {
-                *ptr++ = str_offset_postindex(dest, immed, 4);
+                *ptr++ = str_offset_postindex(dest, tmp, 4);
                 RA_SetDirtyM68kRegister(&ptr, 8 + (opcode & 7));
             }
             else
-                *ptr++ = str_offset(dest, immed, 0);
+                *ptr++ = str_offset(dest, tmp, 0);
             break;
         case 2:
             if (mode == 4)
@@ -342,17 +348,17 @@ uint32_t *EMIT_SUBI(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
             *ptr++ = subs_reg(immed, tmp, immed, LSL, 0);
             *ptr++ = lsr(immed, immed, 16);
 #else
-            *ptr++ = adds_reg(immed, immed, tmp, 16);
-            *ptr++ = lsr_immed(immed, immed, 16);
+            *ptr++ = rsbs_reg(tmp, immed, tmp, 16);
+            *ptr++ = lsr_immed(tmp, tmp, 16);
 #endif
             /* Store back */
             if (mode == 3)
             {
-                *ptr++ = strh_offset_postindex(dest, immed, 2);
+                *ptr++ = strh_offset_postindex(dest, tmp, 2);
                 RA_SetDirtyM68kRegister(&ptr, 8 + (opcode & 7));
             }
             else
-                *ptr++ = strh_offset(dest, immed, 0);
+                *ptr++ = strh_offset(dest, tmp, 0);
             break;
         case 1:
             if (mode == 4)
@@ -368,17 +374,17 @@ uint32_t *EMIT_SUBI(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
             *ptr++ = subs_reg(immed, tmp, immed, LSL, 0);
             *ptr++ = lsr(immed, immed, 24);
 #else
-            *ptr++ = adds_reg(immed, immed, tmp, 24);
-            *ptr++ = lsr_immed(immed, immed, 24);
+            *ptr++ = rsbs_reg(tmp, immed, tmp, 24);
+            *ptr++ = lsr_immed(tmp, tmp, 24);
 #endif
             /* Store back */
             if (mode == 3)
             {
-                *ptr++ = strb_offset_postindex(dest, immed, (opcode & 7) == 7 ? 2 : 1);
+                *ptr++ = strb_offset_postindex(dest, tmp, (opcode & 7) == 7 ? 2 : 1);
                 RA_SetDirtyM68kRegister(&ptr, 8 + (opcode & 7));
             }
             else
-                *ptr++ = strb_offset(dest, immed, 0);
+                *ptr++ = strb_offset(dest, tmp, 0);
             break;
         }
 
@@ -894,16 +900,16 @@ uint32_t *EMIT_ORI(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
                 tst_pos = ptr;
                 *ptr++ = cmn_reg(31, immed, LSL, 0);
 #else
-                *ptr++ = orrs_reg(immed, immed, tmp, 0);
+                *ptr++ = orrs_reg(tmp, tmp, immed, 0);
 #endif
                 /* Store back */
                 if (mode == 3)
                 {
-                    *ptr++ = str_offset_postindex(dest, immed, 4);
+                    *ptr++ = str_offset_postindex(dest, tmp, 4);
                     RA_SetDirtyM68kRegister(&ptr, 8 + (opcode & 7));
                 }
                 else
-                    *ptr++ = str_offset(dest, immed, 0);
+                    *ptr++ = str_offset(dest, tmp, 0);
                 break;
             case 2:
                 if (mode == 4)
@@ -920,17 +926,18 @@ uint32_t *EMIT_ORI(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
                 *ptr++ = cmn_reg(31, immed, LSL, 0);
                 *ptr++ = lsr(immed, immed, 16);
 #else
-                *ptr++ = orrs_reg(immed, immed, tmp, 16);
-                *ptr++ = lsr_immed(immed, immed, 16);
+                *ptr++ = lsl_immed(tmp, tmp, 16);
+                *ptr++ = orrs_reg(tmp, immed, tmp, 0);
+                *ptr++ = lsr_immed(tmp, tmp, 16);
 #endif
                 /* Store back */
                 if (mode == 3)
                 {
-                    *ptr++ = strh_offset_postindex(dest, immed, 2);
+                    *ptr++ = strh_offset_postindex(dest, tmp, 2);
                     RA_SetDirtyM68kRegister(&ptr, 8 + (opcode & 7));
                 }
                 else
-                    *ptr++ = strh_offset(dest, immed, 0);
+                    *ptr++ = strh_offset(dest, tmp, 0);
                 break;
             case 1:
                 if (mode == 4)
@@ -947,17 +954,18 @@ uint32_t *EMIT_ORI(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
                 *ptr++ = cmn_reg(31, immed, LSL, 0);
                 *ptr++ = lsr(immed, immed, 24);
 #else
-                *ptr++ = orrs_reg(immed, immed, tmp, 24);
-                *ptr++ = lsr_immed(immed, immed, 24);
+                *ptr++ = lsl_immed(tmp, tmp, 24);
+                *ptr++ = orrs_reg(tmp, immed, tmp, 0);
+                *ptr++ = lsr_immed(tmp, tmp, 24);
 #endif
                 /* Store back */
                 if (mode == 3)
                 {
-                    *ptr++ = strb_offset_postindex(dest, immed, (opcode & 7) == 7 ? 2 : 1);
+                    *ptr++ = strb_offset_postindex(dest, tmp, (opcode & 7) == 7 ? 2 : 1);
                     RA_SetDirtyM68kRegister(&ptr, 8 + (opcode & 7));
                 }
                 else
-                    *ptr++ = strb_offset(dest, immed, 0);
+                    *ptr++ = strb_offset(dest, tmp, 0);
                 break;
         }
 
@@ -980,7 +988,7 @@ uint32_t *EMIT_ORI(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
             ptr = EMIT_SetFlagsConditional(ptr, cc, SR_Z, ARM_CC_EQ);
         if (update_mask & SR_N)
             ptr = EMIT_SetFlagsConditional(ptr, cc, SR_N, ARM_CC_MI);
-    } else {
+    } else if (tst_pos != NULL) {
         for (uint32_t *p = tst_pos; p < ptr; p++)
             p[0] = p[1];
         ptr--;
@@ -1569,16 +1577,16 @@ uint32_t *EMIT_EORI(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
                 tst_pos = ptr;
                 *ptr++ = cmn_reg(31, immed, LSL, 0);
 #else
-                *ptr++ = eors_reg(immed, immed, tmp, 0);
+                *ptr++ = eors_reg(tmp, tmp, immed, 0);
 #endif
                 /* Store back */
                 if (mode == 3)
                 {
-                    *ptr++ = str_offset_postindex(dest, immed, 4);
+                    *ptr++ = str_offset_postindex(dest, tmp, 4);
                     RA_SetDirtyM68kRegister(&ptr, 8 + (opcode & 7));
                 }
                 else
-                    *ptr++ = str_offset(dest, immed, 0);
+                    *ptr++ = str_offset(dest, tmp, 0);
                 break;
             case 2:
                 if (mode == 4)
@@ -1595,17 +1603,18 @@ uint32_t *EMIT_EORI(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
                 *ptr++ = cmn_reg(31, immed, LSL, 0);
                 *ptr++ = lsr(immed, immed, 16);
 #else
-                *ptr++ = eors_reg(immed, immed, tmp, 16);
-                *ptr++ = lsr_immed(immed, immed, 16);
+                *ptr++ = lsl_immed(tmp, tmp, 16);
+                *ptr++ = eors_reg(tmp, immed, tmp, 0);
+                *ptr++ = lsr_immed(tmp, tmp, 16);
 #endif
                 /* Store back */
                 if (mode == 3)
                 {
-                    *ptr++ = strh_offset_postindex(dest, immed, 2);
+                    *ptr++ = strh_offset_postindex(dest, tmp, 2);
                     RA_SetDirtyM68kRegister(&ptr, 8 + (opcode & 7));
                 }
                 else
-                    *ptr++ = strh_offset(dest, immed, 0);
+                    *ptr++ = strh_offset(dest, tmp, 0);
                 break;
             case 1:
                 if (mode == 4)
@@ -1622,17 +1631,18 @@ uint32_t *EMIT_EORI(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
                 *ptr++ = cmn_reg(31, immed, LSL, 0);
                 *ptr++ = lsr(immed, immed, 24);
 #else
-                *ptr++ = eors_reg(immed, immed, tmp, 24);
-                *ptr++ = lsr_immed(immed, immed, 24);
+                *ptr++ = lsl_immed(tmp, tmp, 24);
+                *ptr++ = eors_reg(tmp, immed, tmp, 0);
+                *ptr++ = lsr_immed(tmp, tmp, 24);
 #endif
                 /* Store back */
                 if (mode == 3)
                 {
-                    *ptr++ = strb_offset_postindex(dest, immed, (opcode & 7) == 7 ? 2 : 1);
+                    *ptr++ = strb_offset_postindex(dest, tmp, (opcode & 7) == 7 ? 2 : 1);
                     RA_SetDirtyM68kRegister(&ptr, 8 + (opcode & 7));
                 }
                 else
-                    *ptr++ = strb_offset(dest, immed, 0);
+                    *ptr++ = strb_offset(dest, tmp, 0);
                 break;
         }
 
@@ -1654,7 +1664,7 @@ uint32_t *EMIT_EORI(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
             ptr = EMIT_SetFlagsConditional(ptr, cc, SR_Z, ARM_CC_EQ);
         if (update_mask & SR_N)
             ptr = EMIT_SetFlagsConditional(ptr, cc, SR_N, ARM_CC_MI);
-    } else {
+    } else if (tst_pos != NULL) {
         for (uint32_t *p = tst_pos; p < ptr; p++)
             p[0] = p[1];
         ptr--;
@@ -3298,6 +3308,7 @@ uint32_t *EMIT_MOVES(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
     uint8_t tmpreg = RA_AllocARMRegister(&ptr);
     uint32_t *tmp;
     uint32_t *tmp_priv;
+    uint32_t *tmp_exception_end;
     uint8_t ext_count = 1;
     uint8_t reg = RA_MapM68kRegister(&ptr, opcode2 >> 12);
     
@@ -3402,6 +3413,8 @@ uint32_t *EMIT_MOVES(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
     *tmp_priv = b_cc(ARM_CC_EQ, ptr - tmp_priv - 2);
 #endif
     ptr = EMIT_Exception(ptr, VECTOR_PRIVILEGE_VIOLATION, 0);
+    tmp_exception_end = ptr;
+    *ptr++ = b_cc(ARM_CC_AL, 0);
 
     (*m68k_ptr) += ext_count;
 
@@ -3416,6 +3429,12 @@ uint32_t *EMIT_MOVES(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
     *ptr++ = 1;
     *ptr++ = 0;
     *ptr++ = INSN_TO_LE(0xfffffffe);
+    /*
+        The ARM32 MOVES privilege path falls into the shared unit writeback tail
+        before the translator metadata, so its local exit branch must stop four
+        words earlier than the normal "skip metadata" bias.
+    */
+    *tmp_exception_end = b_cc(ARM_CC_AL, ptr - tmp_exception_end - 6);
 
     return ptr;
 }

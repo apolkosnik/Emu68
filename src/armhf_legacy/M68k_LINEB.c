@@ -264,7 +264,7 @@ static uint32_t *EMIT_EOR_ext(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_pt
         case 2:
             tmp = RA_AllocARMRegister(&ptr);
             *ptr++ = lsl_immed(tmp, src, 16);
-            *ptr++ = eors_reg(tmp, src, dest, 16);
+            *ptr++ = eors_reg(tmp, tmp, dest, 16);
             *ptr++ = lsr_immed(tmp, tmp, 16);
             *ptr++ = bfi(dest, tmp, 0, 16);
             RA_FreeARMRegister(&ptr, tmp);
@@ -272,7 +272,7 @@ static uint32_t *EMIT_EOR_ext(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_pt
         case 1:
             tmp = RA_AllocARMRegister(&ptr);
             *ptr++ = lsl_immed(tmp, src, 24);
-            *ptr++ = eors_reg(tmp, src, dest, 24);
+            *ptr++ = eors_reg(tmp, tmp, dest, 24);
             *ptr++ = lsr_immed(tmp, tmp, 24);
             *ptr++ = bfi(dest, tmp, 0, 8);
             RA_FreeARMRegister(&ptr, tmp);

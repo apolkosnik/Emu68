@@ -296,11 +296,20 @@ static inline __attribute__((always_inline)) uint32_t * load_reg_from_addr(uint3
                 break;
             case 2:
                 {
-                    uint8_t tmp2 = RA_AllocARMRegister(&ptr);
+                    uint8_t offset_reg = index;
+                    uint8_t tmp2 = 0xff;
+
                     if (shift)
+                    {
+                        tmp2 = RA_AllocARMRegister(&ptr);
                         *ptr++ = lsl_immed(tmp2, index, shift);
-                    *ptr++ = ldrh_regoffset(base, reg, tmp2);
-                    RA_FreeARMRegister(&ptr, tmp2);
+                        offset_reg = tmp2;
+                    }
+
+                    *ptr++ = ldrh_regoffset(base, reg, offset_reg);
+
+                    if (tmp2 != 0xff)
+                        RA_FreeARMRegister(&ptr, tmp2);
                 }
                 break;
             case 1:
@@ -579,11 +588,20 @@ static inline __attribute__((always_inline)) uint32_t * store_reg_to_addr(uint32
                 break;
             case 2:
                 {
-                    uint8_t tmp2 = RA_AllocARMRegister(&ptr);
+                    uint8_t offset_reg = index;
+                    uint8_t tmp2 = 0xff;
+
                     if (shift)
+                    {
+                        tmp2 = RA_AllocARMRegister(&ptr);
                         *ptr++ = lsl_immed(tmp2, index, shift);
-                    *ptr++ = strh_regoffset(base, reg, tmp2);
-                    RA_FreeARMRegister(&ptr, tmp2);
+                        offset_reg = tmp2;
+                    }
+
+                    *ptr++ = strh_regoffset(base, reg, offset_reg);
+
+                    if (tmp2 != 0xff)
+                        RA_FreeARMRegister(&ptr, tmp2);
                 }
                 break;
             case 1:

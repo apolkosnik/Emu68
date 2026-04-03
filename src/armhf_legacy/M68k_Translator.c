@@ -37,6 +37,7 @@ const int debug_cnt = 0;
 struct List *ICache;
 struct List LRU;
 static uint32_t *temporary_arm_code;
+static uint32_t *translated_arm_code;
 static struct M68KLocalState *local_state;
 
 int32_t _pc_rel = 0;
@@ -231,6 +232,8 @@ static inline uintptr_t M68K_Translate(uint16_t *m68kcodeptr)
     uint32_t pop_cnt=0;
 
     uint16_t *last_rev_jump = (uint16_t *)0xffffffff;
+
+    translated_arm_code = temporary_arm_code;
 
     if (RA_GetTempAllocMask())
         kprintf("[ICache] Temporary register alloc mask on translate start is non-zero %x\n", RA_GetTempAllocMask());
@@ -608,6 +611,8 @@ static inline uintptr_t M68K_Translate(uint16_t *m68kcodeptr)
         kprintf("[ICache]   Mean ARM instructions per m68k instruction: %d.%02d\n", mean_n, mean_f);
     }
 
+    translated_arm_code = arm_code;
+
     return (uintptr_t)end - (uintptr_t)arm_code;
 }
 
@@ -619,7 +624,7 @@ static inline uintptr_t M68K_Translate(uint16_t *m68kcodeptr)
 void *M68K_TranslateNoCache(uint16_t *m68kcodeptr)
 {
     uintptr_t line_length = M68K_Translate(m68kcodeptr);
-    void *entry_point = (void*)temporary_arm_code;
+    void *entry_point = (void*)translated_arm_code;
 
 #ifdef __aarch64__
     entry_point = (void *)((uintptr_t)entry_point | 0x0000001000000000);
@@ -777,7 +782,7 @@ struct M68KTranslationUnit *M68K_GetTranslationUnit(uint16_t *m68kcodeptr)
         unit->mt_PrologueSize = prologue_size;
         unit->mt_EpilogueSize = epilogue_size;
         unit->mt_Conditionals = conditionals_count;
-        DuffCopy(&unit->mt_ARMCode[0], temporary_arm_code, line_length/4);
+        DuffCopy(&unit->mt_ARMCode[0], translated_arm_code, line_length/4);
 
         ADDHEAD(&LRU, &unit->mt_LRUNode);
         ADDHEAD(&ICache[hash], &unit->mt_HashNode);

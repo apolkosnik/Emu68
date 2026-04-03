@@ -17,6 +17,39 @@ uint32_t *EMIT_MULS(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr) __attri
 
 /* AArch64 has both multiply and divide. No need to have them in C form */
 #ifndef __aarch64__
+static uint32_t *EMIT_DivideByZeroException(uint32_t *ptr, uint8_t ext_words, uint16_t **m68k_ptr)
+{
+    ptr = EMIT_Exception(ptr, VECTOR_DIVIDE_BY_ZERO, 2, (uint32_t)(intptr_t)(*m68k_ptr - 1));
+
+    RA_StoreDirtyFPURegs(&ptr);
+    RA_StoreDirtyM68kRegs(&ptr);
+
+    RA_StoreCC(&ptr);
+    RA_StoreFPCR(&ptr);
+    RA_StoreFPSR(&ptr);
+
+#if EMU68_INSN_COUNTER
+    extern uint32_t insn_count;
+    uint8_t ctx = RA_GetCTX(&ptr);
+    uint8_t tmp = RA_AllocARMRegister(&ptr);
+    *ptr++ = ldr64_offset(ctx, tmp, __builtin_offsetof(struct M68KState, INSN_COUNT));
+    if (insn_count != 0)
+    {
+        uint8_t adj = RA_AllocARMRegister(&ptr);
+        *ptr++ = movw_immed_u16(adj, insn_count & 0xffff);
+        if (insn_count >> 16)
+            *ptr++ = movt_immed_u16(adj, insn_count >> 16);
+        *ptr++ = add_reg(tmp, tmp, adj, 0);
+        RA_FreeARMRegister(&ptr, adj);
+    }
+    *ptr++ = str64_offset(ctx, tmp, __builtin_offsetof(struct M68KState, INSN_COUNT));
+
+    RA_FreeARMRegister(&ptr, tmp);
+#endif
+
+    return ptr;
+}
+
 struct Result32 uidiv(uint32_t n, uint32_t d)
 {
     struct Result32 res = { 0, 0 };
@@ -109,6 +142,72 @@ struct Result64 sldiv(int64_t n, int64_t d)
     }
 
     res = uldiv(n, d);
+
+    return res;
+}
+
+struct Result64Parts {
+    uint32_t q_lo;
+    uint32_t q_hi;
+    uint32_t r_lo;
+    uint32_t r_hi;
+};
+
+static struct Result64Parts uldiv_64_32(uint32_t n_lo, uint32_t n_hi, uint32_t d)
+{
+    struct Result64Parts res = { 0, 0, 0, 0 };
+    uint64_t r = 0;
+
+    for (int i = 63; i >= 0; --i)
+    {
+        r <<= 1;
+        if (i >= 32)
+            r |= (n_hi >> (i - 32)) & 1;
+        else
+            r |= (n_lo >> i) & 1;
+
+        if (r >= d)
+        {
+            r -= d;
+            if (i >= 32)
+                res.q_hi |= 1u << (i - 32);
+            else
+                res.q_lo |= 1u << i;
+        }
+    }
+
+    res.r_lo = (uint32_t)r;
+
+    return res;
+}
+
+static struct Result64Parts sldiv_64_32(uint32_t n_lo, uint32_t n_hi, int32_t d)
+{
+    int neg_n = ((int32_t)n_hi) < 0;
+    int neg_d = d < 0;
+    uint32_t d_abs = neg_d ? (uint32_t)(-(uint32_t)d) : (uint32_t)d;
+    uint32_t abs_lo = n_lo;
+    uint32_t abs_hi = n_hi;
+
+    if (neg_n)
+    {
+        abs_lo = ~abs_lo + 1;
+        abs_hi = ~abs_hi + (abs_lo == 0);
+    }
+
+    struct Result64Parts res = uldiv_64_32(abs_lo, abs_hi, d_abs);
+
+    if (neg_n ^ neg_d)
+    {
+        res.q_lo = ~res.q_lo + 1;
+        res.q_hi = ~res.q_hi + (res.q_lo == 0);
+    }
+
+    if (neg_n)
+    {
+        res.r_lo = ~res.r_lo + 1;
+        res.r_hi = ~res.r_hi + (res.r_lo == 0);
+    }
 
     return res;
 }
@@ -293,7 +392,7 @@ uint32_t *EMIT_MULS_L(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
             *ptr++ = cmp64_reg(tmp, reg_dl, LSR, 32);
             RA_FreeARMRegister(&ptr, tmp);
 #else
-            if (opcode2 & (1 << 10))
+            if (opcode2 & (1 << 11))
             {
                 uint8_t tmp = RA_AllocARMRegister(&ptr);
                 /*
@@ -328,6 +427,13 @@ uint32_t *EMIT_DIVS_W(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
     uint8_t reg_quot = RA_AllocARMRegister(&ptr);
     uint8_t reg_rem = RA_AllocARMRegister(&ptr);
     uint8_t ext_words = 0;
+#ifndef __aarch64__
+    uint8_t reg_overflow = 0xff;
+    RAStateSnapshot divide_by_zero_state;
+    uint32_t *branch_nonzero = NULL;
+    uint32_t *branch_exception_end = NULL;
+    uint32_t *branch_unit_end = NULL;
+#endif
 
     ptr = EMIT_LoadFromEffectiveAddress(ptr, 2, &reg_q, opcode & 0x3f, *m68k_ptr, &ext_words, 0, NULL);
     ptr = EMIT_FlushPC(ptr);
@@ -381,10 +487,21 @@ uint32_t *EMIT_DIVS_W(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
     /* Update branch to the continuation */
     *tmp_ptr = b_cc(A64_CC_NE, ptr - tmp_ptr);
 #else
+    ptr = EMIT_AdvancePC(ptr, 2 * (ext_words + 1));
+    (*m68k_ptr) += ext_words;
+    ptr = EMIT_FlushPC(ptr);
+
     *ptr++ = cmp_immed(reg_q, 0);
+    branch_nonzero = ptr;
     *ptr++ = b_cc(ARM_CC_NE, 0);
-    /* At this place handle exception - division by zero! */
-    *ptr++ = udf(0);
+
+    RA_SaveState(&divide_by_zero_state);
+    ptr = EMIT_DivideByZeroException(ptr, ext_words, m68k_ptr);
+    RA_RestoreState(&divide_by_zero_state);
+    branch_exception_end = ptr;
+    *ptr++ = b_cc(ARM_CC_AL, 0);
+
+    *branch_nonzero = b_cc(ARM_CC_NE, ptr - branch_nonzero - 2);
 #endif
 
 
@@ -439,19 +556,18 @@ uint32_t *EMIT_DIVS_W(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
 
     RA_FreeARMRegister(&ptr, tmp);
 #else
-    /* Test bit 15 of quotient */
-    *ptr++ = tst_immed(reg_quot, 0x902);
-
-    /* Sign-extract upper 16 bits of quotient into temporary register */
+    reg_overflow = RA_AllocARMRegister(&ptr);
     uint8_t tmp = RA_AllocARMRegister(&ptr);
-    *ptr++ = sxth(tmp, reg_quot, 2);
-    /* If bit 15 of quotient was set, increase extracted 16 bits, should advance to 0 */
-    *ptr++ = add_cc_immed(ARM_CC_NE, tmp, tmp, 1);
-    *ptr++ = cmp_immed(tmp, 0);
+    *ptr++ = sxth(tmp, reg_quot, 0);
+    *ptr++ = cmp_reg(tmp, reg_quot);
+    *ptr++ = mov_cc_immed_u8(ARM_CC_EQ, reg_overflow, 0);
+    *ptr++ = mov_cc_immed_u8(ARM_CC_NE, reg_overflow, 1);
     RA_FreeARMRegister(&ptr, tmp);
 #endif
 
+#ifdef __aarch64__
     (*m68k_ptr) += ext_words;
+#endif
 
     RA_SetDirtyM68kRegister(&ptr, (opcode >> 9) & 7);
 
@@ -490,14 +606,25 @@ uint32_t *EMIT_DIVS_W(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
     else {
         *ptr++ = b_cc(A64_CC_NE, 3);
     }
+#else
+    *ptr++ = cmp_immed(reg_overflow, 0);
+    uint32_t *branch_overflow = ptr;
+    *ptr++ = b_cc(ARM_CC_NE, 0);
 #endif
 
     /* Move signed 16-bit quotient to lower 16 bits of target register, signed 16 bit reminder to upper 16 bits */
     *ptr++ = mov_reg(reg_a, reg_quot);
     *ptr++ = bfi(reg_a, reg_rem, 16, 16);
 
+#ifndef __aarch64__
+    *branch_overflow = b_cc(ARM_CC_NE, ptr - branch_overflow - 2);
+    RA_FreeARMRegister(&ptr, reg_overflow);
+#endif
+
     /* Advance PC */
+#ifdef __aarch64__
     ptr = EMIT_AdvancePC(ptr, 2 * (ext_words + 1));
+#endif
 
     RA_FreeARMRegister(&ptr, reg_a);
     RA_FreeARMRegister(&ptr, reg_q);
@@ -505,6 +632,18 @@ uint32_t *EMIT_DIVS_W(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
     RA_FreeARMRegister(&ptr, reg_rem);
 
 #ifndef __aarch64__
+    branch_unit_end = ptr;
+    *ptr++ = b_cc(ARM_CC_AL, 0);
+
+    *branch_exception_end = b_cc(ARM_CC_AL, ptr - branch_exception_end - 2);
+    *branch_unit_end = b_cc(ARM_CC_AL, ptr - branch_unit_end - 2);
+    *ptr++ = (uint32_t)(uintptr_t)branch_unit_end;
+    *ptr++ = (uint32_t)(uintptr_t)branch_exception_end;
+    *ptr++ = 2;
+    *ptr++ = 0;
+    *ptr++ = INSN_TO_LE(0xfffffffe);
+    *ptr++ = INSN_TO_LE(0xffffffff);
+
     if (!Features.ARM_SUPPORTS_DIV)
         *ptr++ = INSN_TO_LE(0xfffffff0);
 #endif
@@ -520,6 +659,13 @@ uint32_t *EMIT_DIVU_W(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
     uint8_t reg_quot = RA_AllocARMRegister(&ptr);
     uint8_t reg_rem = RA_AllocARMRegister(&ptr);
     uint8_t ext_words = 0;
+#ifndef __aarch64__
+    uint8_t reg_overflow = 0xff;
+    RAStateSnapshot divide_by_zero_state;
+    uint32_t *branch_nonzero = NULL;
+    uint32_t *branch_exception_end = NULL;
+    uint32_t *branch_unit_end = NULL;
+#endif
 
     ptr = EMIT_LoadFromEffectiveAddress(ptr, 2, &reg_q, opcode & 0x3f, *m68k_ptr, &ext_words, 0, NULL);
     ptr = EMIT_FlushPC(ptr);
@@ -573,10 +719,21 @@ uint32_t *EMIT_DIVU_W(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
     /* Update branch to the continuation */
     *tmp_ptr = b_cc(A64_CC_NE, ptr - tmp_ptr);
 #else
+    ptr = EMIT_AdvancePC(ptr, 2 * (ext_words + 1));
+    (*m68k_ptr) += ext_words;
+    ptr = EMIT_FlushPC(ptr);
+
     *ptr++ = cmp_immed(reg_q, 0);
+    branch_nonzero = ptr;
     *ptr++ = b_cc(ARM_CC_NE, 0);
-    /* At this place handle exception - division by zero! */
-    *ptr++ = udf(0);
+
+    RA_SaveState(&divide_by_zero_state);
+    ptr = EMIT_DivideByZeroException(ptr, ext_words, m68k_ptr);
+    RA_RestoreState(&divide_by_zero_state);
+    branch_exception_end = ptr;
+    *ptr++ = b_cc(ARM_CC_AL, 0);
+
+    *branch_nonzero = b_cc(ARM_CC_NE, ptr - branch_nonzero - 2);
 #endif
 
 #ifdef __aarch64__
@@ -630,14 +787,18 @@ uint32_t *EMIT_DIVU_W(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
 
     RA_FreeARMRegister(&ptr, tmp);
 #else
-    /* Extract upper 16 bits of quotient into temporary register */
+    reg_overflow = RA_AllocARMRegister(&ptr);
     uint8_t tmp = RA_AllocARMRegister(&ptr);
-    *ptr++ = uxth(tmp, reg_quot, 2);
-    *ptr++ = cmp_immed(tmp, 0);
+    *ptr++ = uxth(tmp, reg_quot, 0);
+    *ptr++ = cmp_reg(tmp, reg_quot);
+    *ptr++ = mov_cc_immed_u8(ARM_CC_EQ, reg_overflow, 0);
+    *ptr++ = mov_cc_immed_u8(ARM_CC_NE, reg_overflow, 1);
     RA_FreeARMRegister(&ptr, tmp);
 #endif
 
+#ifdef __aarch64__
     (*m68k_ptr) += ext_words;
+#endif
 
     RA_SetDirtyM68kRegister(&ptr, (opcode >> 9) & 7);
 
@@ -678,14 +839,25 @@ uint32_t *EMIT_DIVU_W(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
     else {
         *ptr++ = b_cc(A64_CC_NE, 3);
     }
+#else
+    *ptr++ = cmp_immed(reg_overflow, 0);
+    uint32_t *branch_overflow = ptr;
+    *ptr++ = b_cc(ARM_CC_NE, 0);
 #endif
 
     /* Move unsigned 16-bit quotient to lower 16 bits of target register, unsigned 16 bit reminder to upper 16 bits */
     *ptr++ = mov_reg(reg_a, reg_quot);
     *ptr++ = bfi(reg_a, reg_rem, 16, 16);
 
+#ifndef __aarch64__
+    *branch_overflow = b_cc(ARM_CC_NE, ptr - branch_overflow - 2);
+    RA_FreeARMRegister(&ptr, reg_overflow);
+#endif
+
     /* Advance PC */
+#ifdef __aarch64__
     ptr = EMIT_AdvancePC(ptr, 2 * (ext_words + 1));
+#endif
 
     RA_FreeARMRegister(&ptr, reg_a);
     RA_FreeARMRegister(&ptr, reg_q);
@@ -693,6 +865,18 @@ uint32_t *EMIT_DIVU_W(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
     RA_FreeARMRegister(&ptr, reg_rem);
 
 #ifndef __aarch64__
+    branch_unit_end = ptr;
+    *ptr++ = b_cc(ARM_CC_AL, 0);
+
+    *branch_exception_end = b_cc(ARM_CC_AL, ptr - branch_exception_end - 2);
+    *branch_unit_end = b_cc(ARM_CC_AL, ptr - branch_unit_end - 2);
+    *ptr++ = (uint32_t)(uintptr_t)branch_unit_end;
+    *ptr++ = (uint32_t)(uintptr_t)branch_exception_end;
+    *ptr++ = 2;
+    *ptr++ = 0;
+    *ptr++ = INSN_TO_LE(0xfffffffe);
+    *ptr++ = INSN_TO_LE(0xffffffff);
+
     if (!Features.ARM_SUPPORTS_DIV)
         *ptr++ = INSN_TO_LE(0xfffffff0);
 #endif
@@ -710,6 +894,12 @@ uint32_t *EMIT_DIVUS_L(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
     uint8_t reg_dq = RA_MapM68kRegister(&ptr, (opcode2 >> 12) & 7);
     uint8_t reg_dr = RA_MapM68kRegister(&ptr, opcode2 & 7);
     uint8_t ext_words = 1;
+#ifndef __aarch64__
+    RAStateSnapshot divide_by_zero_state;
+    uint32_t *branch_nonzero = NULL;
+    uint32_t *branch_exception_end = NULL;
+    uint32_t *branch_unit_end = NULL;
+#endif
 
     // Load divisor
     ptr = EMIT_LoadFromEffectiveAddress(ptr, 4, &reg_q, opcode & 0x3f, *m68k_ptr, &ext_words, 1, NULL);
@@ -764,10 +954,21 @@ uint32_t *EMIT_DIVUS_L(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
     /* Update branch to the continuation */
     *tmp_ptr = cbnz(reg_q, ptr - tmp_ptr);
 #else
+    ptr = EMIT_AdvancePC(ptr, 2 * (ext_words + 1));
+    (*m68k_ptr) += ext_words;
+    ptr = EMIT_FlushPC(ptr);
+
     *ptr++ = cmp_immed(reg_q, 0);
+    branch_nonzero = ptr;
     *ptr++ = b_cc(ARM_CC_NE, 0);
-    /* At this place handle exception - division by zero! */
-    *ptr++ = udf(0);
+
+    RA_SaveState(&divide_by_zero_state);
+    ptr = EMIT_DivideByZeroException(ptr, ext_words, m68k_ptr);
+    RA_RestoreState(&divide_by_zero_state);
+    branch_exception_end = ptr;
+    *ptr++ = b_cc(ARM_CC_AL, 0);
+
+    *branch_nonzero = b_cc(ARM_CC_NE, ptr - branch_nonzero - 2);
 #endif
 
 
@@ -849,84 +1050,86 @@ uint32_t *EMIT_DIVUS_L(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
     {
         if (div64)
         {
-            /* Div64/32 ->32:32 routine based on article: https://gmplib.org/~tege/division-paper.pdf */
-            /* Warning - the routine exhausts all registers from allocator! */
-            uint8_t tmp_r0 = reg_dr; /* High 32 bits of dividend */
-            uint8_t tmp_r1 = reg_dq; /* Low 32 bits of dividend */
-            uint8_t tmp_r2 = reg_q;  /* divisor */
-            uint8_t tmp_r3 = RA_AllocARMRegister(&ptr);
-            uint8_t tmp_r4 = RA_AllocARMRegister(&ptr);
-            uint8_t tmp_r5 = RA_AllocARMRegister(&ptr);
-            uint8_t tmp_r6 = RA_AllocARMRegister(&ptr);
-            uint8_t tmp_r7 = RA_AllocARMRegister(&ptr);
-            uint8_t tmp_r8 = RA_AllocARMRegister(&ptr);
-            uint8_t tmp_r9 = RA_AllocARMRegister(&ptr);
+            uint8_t reg_res_q = RA_AllocARMRegister(&ptr);
+            uint8_t reg_res_r = RA_AllocARMRegister(&ptr);
+            uint8_t reg_spills[4] = { 0xff, 0xff, 0xff, 0xff };
+            uint8_t reg_spill_count = 0;
 
-            kprintf("DIV%c_L 64/32->32:32\n", sig ? 'S':'U');
-
-            if (sig) {
-
-            }
-            else {
-                *ptr++ = clz(tmp_r3, tmp_r2);
-                *ptr++ = cmp_immed(tmp_r3, 0);
-                *ptr++ = mov_cc_reg(ARM_CC_EQ, tmp_r6, tmp_r2);
-                *ptr++ = b_cc(ARM_CC_EQ, 9);
-                *ptr++ = mov_reg(tmp_r4, tmp_r0);
-                *ptr++ = mov_reg(tmp_r5, tmp_r1);
-                *ptr++ = sub_immed(tmp_r1, tmp_r3, 32);
-                *ptr++ = rsb_immed(tmp_r0, tmp_r3, 32);
-                *ptr++ = lsl_reg(tmp_r4, tmp_r4, tmp_r3);
-                *ptr++ = orr_reg_lsl_reg(tmp_r4, tmp_r4, tmp_r5, tmp_r1);
-                *ptr++ = orr_reg_lsr_reg(tmp_r4, tmp_r4, tmp_r5, tmp_r0);
-                *ptr++ = lsl_reg(tmp_r1, tmp_r5, tmp_r3);
-                *ptr++ = mov_reg(tmp_r0, tmp_r4);
-                *ptr++ = lsl_reg(tmp_r6, tmp_r2, tmp_r3);
-                *ptr++ = movw_immed_u16(tmp_r3, 0xc200);
-                *ptr++ = and_immed(tmp_r5, tmp_r6, 1);
-                *ptr++ = lsr_immed(tmp_r4, tmp_r6, 22);
-                *ptr++ = movt_immed_u16(tmp_r3, 0x00ff);
-                *ptr++ = lsr_immed(tmp_r8, tmp_r6, 11);
-                *ptr++ = udiv(tmp_r3, tmp_r3, tmp_r4);
-                *ptr++ = mul(tmp_r4, tmp_r3, tmp_r3);
-                *ptr++ = lsl_immed(tmp_r3, tmp_r3, 4);
-                *ptr++ = add_immed(tmp_r8, tmp_r8, 1);
-                *ptr++ = umull(tmp_r9, tmp_r8, tmp_r8, tmp_r4);
-                *ptr++ = sub_immed(tmp_r4, tmp_r3, 1);
-                *ptr++ = rsb_immed(tmp_r3, tmp_r3, 1);
-                *ptr++ = sub_reg(tmp_r7, tmp_r4, tmp_r8, 0);
-                *ptr++ = mov_reg(tmp_r9, tmp_r1);
-                *ptr++ = add_reg(tmp_r3, tmp_r3, tmp_r8, 0);
-                *ptr++ = lsr_immed(tmp_r4, tmp_r7, 1);
-                *ptr++ = mul(tmp_r4, tmp_r4, tmp_r5);
-                *ptr++ = lsr_immed(tmp_r5, tmp_r6, 1);
-                *ptr++ = mla(tmp_r4, tmp_r4, tmp_r5, tmp_r3);
-                *ptr++ = lsl_immed(tmp_r3, tmp_r7, 15);
-                *ptr++ = umull(tmp_r5, tmp_r4, tmp_r4, tmp_r7);
-                *ptr++ = mov_immed_u8(tmp_r5, 0);
-                *ptr++ = add_reg_lsr_imm(tmp_r4, tmp_r3, tmp_r4, 1);
-                *ptr++ = umlal(tmp_r1, tmp_r0, tmp_r0, tmp_r4);
-                *ptr++ = mov_reg(tmp_r4, tmp_r0);
-                *ptr++ = add_immed(tmp_r0, tmp_r4, 1);
-                *ptr++ = mls(tmp_r3, tmp_r9, tmp_r6, tmp_r0);
-                *ptr++ = cmp_reg(tmp_r3, tmp_r1);
-                *ptr++ = add_cc_reg(ARM_CC_HI, tmp_r3, tmp_r3, tmp_r6, 0);
-                *ptr++ = mov_cc_reg(ARM_CC_HI, tmp_r0, tmp_r4);
-                *ptr++ = cmp_reg(tmp_r3, tmp_r6);
-                *ptr++ = sub_cc_reg(ARM_CC_CS, tmp_r3, tmp_r3, tmp_r6, 0);
-                *ptr++ = add_cc_immed(ARM_CC_CS, tmp_r0, tmp_r0, 1);
-                *ptr++ = orr_reg(tmp_r7, tmp_r5, tmp_r0, 0);
-                *ptr++ = mov_reg(tmp_r0, tmp_r3);
-                *ptr++ = mov_reg(tmp_r1, tmp_r7);
+            while ((reg_res_q < 4) || (reg_res_r < 4))
+            {
+                if (reg_res_q < 4)
+                {
+                    reg_spills[reg_spill_count++] = reg_res_q;
+                    reg_res_q = RA_AllocARMRegister(&ptr);
+                }
+                if (reg_res_r < 4)
+                {
+                    reg_spills[reg_spill_count++] = reg_res_r;
+                    reg_res_r = RA_AllocARMRegister(&ptr);
+                }
             }
 
-            RA_FreeARMRegister(&ptr, tmp_r3);
-            RA_FreeARMRegister(&ptr, tmp_r4);
-            RA_FreeARMRegister(&ptr, tmp_r5);
-            RA_FreeARMRegister(&ptr, tmp_r6);
-            RA_FreeARMRegister(&ptr, tmp_r7);
-            RA_FreeARMRegister(&ptr, tmp_r8);
-            RA_FreeARMRegister(&ptr, tmp_r9);
+            *ptr++ = push(0x0f | (1 << 12) | (1 << 14));
+            *ptr++ = sub_immed(13, 13, 16);
+            *ptr++ = mov_reg(0, 13);
+            if (reg_dq < 4)
+            {
+                *ptr++ = ldr_offset(13, 1, 16 + 4 * reg_dq);
+            }
+            else if (reg_dq != 1)
+            {
+                *ptr++ = mov_reg(1, reg_dq);
+            }
+            if (reg_dr < 4)
+            {
+                *ptr++ = ldr_offset(13, 2, 16 + 4 * reg_dr);
+            }
+            else if (reg_dr != 2)
+            {
+                *ptr++ = mov_reg(2, reg_dr);
+            }
+            if (reg_q < 4)
+            {
+                *ptr++ = ldr_offset(13, 3, 16 + 4 * reg_q);
+            }
+            else if (reg_q != 3)
+            {
+                *ptr++ = mov_reg(3, reg_q);
+            }
+
+            *ptr++ = ldr_offset(15, 12, 4);
+            *ptr++ = blx_cc_reg(ARM_CC_AL, 12);
+            *ptr++ = b_cc(ARM_CC_AL, 0);
+            if (sig)
+                *ptr++ = BE32((uint32_t)&sldiv_64_32);
+            else
+                *ptr++ = BE32((uint32_t)&uldiv_64_32);
+
+            *ptr++ = ldr_offset(13, reg_res_q, 0);
+            *ptr++ = ldr_offset(13, reg_res_r, 8);
+            *ptr++ = ldr_offset(13, 12, 4);
+
+            if (sig)
+            {
+                *ptr++ = asr_immed(3, reg_res_q, 31);
+                *ptr++ = cmp_reg(12, 3);
+            }
+            else
+            {
+                *ptr++ = cmp_immed(12, 0);
+            }
+
+            *ptr++ = add_immed(13, 13, 16);
+            *ptr++ = pop(0x0f | (1 << 12) | (1 << 14));
+
+            *ptr++ = mov_cc_reg(ARM_CC_EQ, reg_dq, reg_res_q);
+            if (reg_dr != reg_dq)
+                *ptr++ = mov_cc_reg(ARM_CC_EQ, reg_dr, reg_res_r);
+
+            RA_FreeARMRegister(&ptr, reg_res_q);
+            RA_FreeARMRegister(&ptr, reg_res_r);
+            while (reg_spill_count > 0)
+                RA_FreeARMRegister(&ptr, reg_spills[--reg_spill_count]);
         }
         else
         {
@@ -999,7 +1202,9 @@ uint32_t *EMIT_DIVUS_L(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
     }
 #endif
 
+#ifdef __aarch64__
     (*m68k_ptr) += ext_words;
+#endif
 
     /* Set Dq dirty */
     RA_SetDirtyM68kRegister(&ptr, (opcode2 >> 12) & 7);
@@ -1032,7 +1237,9 @@ uint32_t *EMIT_DIVUS_L(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
     }
 
     /* Advance PC */
+#ifdef __aarch64__
     ptr = EMIT_AdvancePC(ptr, 2 * (ext_words + 1));
+#endif
 
     RA_FreeARMRegister(&ptr, reg_q);
     RA_FreeARMRegister(&ptr, reg_dq);
@@ -1040,6 +1247,18 @@ uint32_t *EMIT_DIVUS_L(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
         RA_FreeARMRegister(&ptr, reg_dr);
 
 #ifndef __aarch64__
+    branch_unit_end = ptr;
+    *ptr++ = b_cc(ARM_CC_AL, 0);
+
+    *branch_exception_end = b_cc(ARM_CC_AL, ptr - branch_exception_end - 2);
+    *branch_unit_end = b_cc(ARM_CC_AL, ptr - branch_unit_end - 2);
+    *ptr++ = (uint32_t)(uintptr_t)branch_unit_end;
+    *ptr++ = (uint32_t)(uintptr_t)branch_exception_end;
+    *ptr++ = 2;
+    *ptr++ = 0;
+    *ptr++ = INSN_TO_LE(0xfffffffe);
+    *ptr++ = INSN_TO_LE(0xffffffff);
+
     if (!Features.ARM_SUPPORTS_DIV)
         *ptr++ = INSN_TO_LE(0xfffffff0);
 #endif

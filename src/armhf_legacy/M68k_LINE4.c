@@ -945,6 +945,7 @@ static uint32_t *EMIT_MOVEfromSR(uint32_t *ptr, uint16_t opcode, uint16_t **m68k
     uint8_t sp = RA_MapM68kRegister(&ptr, 15);
     uint32_t *tmp_priv;
     uint32_t *tmp_end;
+    uint32_t *tmp_exception_end;
 
     (void)sp;
     RA_SetDirtyM68kRegister(&ptr, 15);
@@ -965,12 +966,15 @@ static uint32_t *EMIT_MOVEfromSR(uint32_t *ptr, uint16_t opcode, uint16_t **m68k
 
     *tmp_priv = b_cc(ARM_CC_EQ, ptr - tmp_priv - 2);
     ptr = EMIT_Exception(ptr, VECTOR_PRIVILEGE_VIOLATION, 0);
+    tmp_exception_end = ptr;
+    *ptr++ = b_cc(ARM_CC_AL, 0);
     *tmp_end = b_cc(ARM_CC_AL, ptr - tmp_end - 2);
 
     *ptr++ = (uint32_t)(uintptr_t)tmp_end;
     *ptr++ = 1;
     *ptr++ = 0;
     *ptr++ = INSN_TO_LE(0xfffffffe);
+    *tmp_exception_end = b_cc(ARM_CC_AL, ptr - tmp_exception_end - 2);
 
     RA_FreeARMRegister(&ptr, tmp);
 #endif
@@ -1139,6 +1143,7 @@ static uint32_t *EMIT_MOVEtoSR(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_p
     uint32_t *branch_after_user_from_msp = NULL;
     uint32_t *branch_end = NULL;
     uint32_t *exception_ptr = NULL;
+    uint32_t *exception_end = NULL;
     uint32_t *after_m_ptr = NULL;
     uint32_t *load_isp_ptr = NULL;
     uint32_t *after_s_ptr = NULL;
@@ -1212,6 +1217,8 @@ static uint32_t *EMIT_MOVEtoSR(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_p
 
     exception_ptr = ptr;
     ptr = EMIT_Exception(ptr, VECTOR_PRIVILEGE_VIOLATION, 0);
+    exception_end = ptr;
+    *ptr++ = b_cc(ARM_CC_AL, 0);
 
     *branch_privilege = b_cc(ARM_CC_EQ, exception_ptr - branch_privilege - 2);
     *branch_end = b_cc(ARM_CC_AL, ptr - branch_end - 2);
@@ -1220,6 +1227,7 @@ static uint32_t *EMIT_MOVEtoSR(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_p
     *ptr++ = 1;
     *ptr++ = 0;
     *ptr++ = INSN_TO_LE(0xfffffffe);
+    *exception_end = b_cc(ARM_CC_AL, ptr - exception_end - 2);
 
     RA_FreeARMRegister(&ptr, src);
     RA_FreeARMRegister(&ptr, changed);
@@ -1605,10 +1613,10 @@ static uint32_t *EMIT_RESET(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr,
 #else
     uint8_t cc = RA_ModifyCC(&ptr);
     uint8_t tmp = RA_AllocARMRegister(&ptr);
-    RAStateSnapshot exception_state;
     uint32_t *branch_privilege = NULL;
     uint32_t *branch_success = NULL;
     uint32_t *privilege_ptr = NULL;
+    uint32_t *exception_end = NULL;
 
     ptr = EMIT_FlushPC(ptr);
 
@@ -1625,9 +1633,9 @@ static uint32_t *EMIT_RESET(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr,
     privilege_ptr = ptr;
     *branch_privilege = b_cc(ARM_CC_EQ, privilege_ptr - branch_privilege - 2);
 
-    RA_SaveState(&exception_state);
     ptr = EMIT_Exception(ptr, VECTOR_PRIVILEGE_VIOLATION, 0);
-    RA_RestoreState(&exception_state);
+    exception_end = ptr;
+    *ptr++ = b_cc(ARM_CC_AL, 0);
     RA_FreeARMRegister(&ptr, tmp);
 
     *branch_success = b_cc(ARM_CC_AL, ptr - branch_success - 2);
@@ -1636,6 +1644,7 @@ static uint32_t *EMIT_RESET(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr,
     *ptr++ = 0;
     *ptr++ = INSN_TO_LE(0xfffffffe);
     *ptr++ = INSN_TO_LE(0xffffffff);
+    *exception_end = b_cc(ARM_CC_AL, ptr - exception_end - 2);
 #endif
 
     return ptr;
@@ -1771,6 +1780,7 @@ static uint32_t *EMIT_STOP(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr, 
     uint32_t *branch_after_user_from_msp = NULL;
     uint32_t *branch_end = NULL;
     uint32_t *exception_ptr = NULL;
+    uint32_t *exception_end = NULL;
     uint32_t *after_m_ptr = NULL;
     uint32_t *load_isp_ptr = NULL;
     uint32_t *after_s_ptr = NULL;
@@ -1842,6 +1852,8 @@ static uint32_t *EMIT_STOP(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr, 
 
     exception_ptr = ptr;
     ptr = EMIT_Exception(ptr, VECTOR_PRIVILEGE_VIOLATION, 0);
+    exception_end = ptr;
+    *ptr++ = b_cc(ARM_CC_AL, 0);
 
     *branch_privilege = b_cc(ARM_CC_EQ, exception_ptr - branch_privilege - 2);
     *branch_end = b_cc(ARM_CC_AL, ptr - branch_end - 2);
@@ -1851,6 +1863,7 @@ static uint32_t *EMIT_STOP(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr, 
     *ptr++ = 0;
     *ptr++ = INSN_TO_LE(0xfffffffe);
     *ptr++ = INSN_TO_LE(0xffffffff);
+    *exception_end = b_cc(ARM_CC_AL, ptr - exception_end - 2);
 
     RA_FreeARMRegister(&ptr, changed);
     RA_FreeARMRegister(&ptr, tmp);
@@ -1873,6 +1886,7 @@ static uint32_t *EMIT_RTE(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr, u
     uint8_t changed = RA_AllocARMRegister(&ptr);
     uint8_t ctx = RA_GetCTX(&ptr);
     uint32_t *tmpptr;
+    uint32_t *exception_end;
     RA_SetDirtyM68kRegister(&ptr, 15);
 
     /* Test if supervisor mode is active */
@@ -2250,6 +2264,7 @@ static uint32_t *EMIT_MOVEC(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr,
     uint8_t tmp = 0xff;
     uint8_t sp = 0xff;
     uint32_t *tmpptr;
+    uint32_t *exception_end;
     int illegal = 0;
 
     (*m68k_ptr) += 1;
@@ -2525,6 +2540,7 @@ static uint32_t *EMIT_MOVEC(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr,
     uint8_t tmp = 0xff;
     uint8_t sp = 0xff;
     uint32_t *tmpptr;
+    uint32_t *exception_end;
     int illegal = 0;
 
     (*m68k_ptr) += 1;
@@ -2723,6 +2739,8 @@ static uint32_t *EMIT_MOVEC(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr,
 
         /* No supervisor. Update USP, generate exception */
         ptr = EMIT_Exception(ptr, VECTOR_PRIVILEGE_VIOLATION, 0);
+        exception_end = ptr;
+        *ptr++ = b_cc(ARM_CC_AL, 0);
 
         *tmpptr = b_cc(ARM_CC_AL, ptr - tmpptr - 2);
         *ptr++ = (uint32_t)(uintptr_t)tmpptr;
@@ -2730,6 +2748,7 @@ static uint32_t *EMIT_MOVEC(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr,
         *ptr++ = 0;
         *ptr++ = INSN_TO_LE(0xfffffffe);
         *ptr++ = INSN_TO_LE(0xffffffff);
+        *exception_end = b_cc(ARM_CC_AL, ptr - exception_end - 2);
     }
 #endif
 
@@ -2778,6 +2797,7 @@ static uint32_t *EMIT_MOVEUSP(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_pt
 #else
     uint32_t *tmp_priv;
     uint32_t *tmp_end;
+    uint32_t *tmp_exception_end;
     uint8_t ctx = RA_GetCTX(&ptr);
     uint8_t cc = RA_ModifyCC(&ptr);
     uint8_t tmp = RA_AllocARMRegister(&ptr);
@@ -2810,6 +2830,8 @@ static uint32_t *EMIT_MOVEUSP(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_pt
 
     *tmp_priv = b_cc(ARM_CC_EQ, ptr - tmp_priv - 2);
     ptr = EMIT_Exception(ptr, VECTOR_PRIVILEGE_VIOLATION, 0);
+    tmp_exception_end = ptr;
+    *ptr++ = b_cc(ARM_CC_AL, 0);
     *tmp_end = b_cc(ARM_CC_AL, ptr - tmp_end - 2);
 
     *ptr++ = (uint32_t)(uintptr_t)tmp_end;
@@ -2817,6 +2839,7 @@ static uint32_t *EMIT_MOVEUSP(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_pt
     *ptr++ = 0;
     *ptr++ = INSN_TO_LE(0xfffffffe);
     *ptr++ = INSN_TO_LE(0xffffffff);
+    *tmp_exception_end = b_cc(ARM_CC_AL, ptr - tmp_exception_end - 2);
 
     RA_FreeARMRegister(&ptr, tmp);
 #endif
@@ -3416,6 +3439,7 @@ static uint32_t *EMIT_CHK(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr, u
     uint32_t *branch_negative = NULL;
     uint32_t *branch_skip_exception = NULL;
     uint32_t *branch_after_clear = NULL;
+    uint32_t *unit_end = NULL;
     uint32_t *negative_ptr = NULL;
 
     /* word operation */
@@ -3429,7 +3453,8 @@ static uint32_t *EMIT_CHK(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr, u
     else
     {
         ptr = EMIT_LoadFromEffectiveAddress(ptr, 4, &src, opcode & 0x3f, *m68k_ptr, &ext_words, 1, NULL);
-        cmp_dn = dn;
+        cmp_dn = RA_AllocARMRegister(&ptr);
+        *ptr++ = mov_reg(cmp_dn, dn);
     }
 
     ptr = EMIT_AdvancePC(ptr, 2 * (ext_words + 1));
@@ -3462,14 +3487,18 @@ static uint32_t *EMIT_CHK(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr, u
     RA_SaveState(&exception_state);
     ptr = EMIT_Exception(ptr, VECTOR_CHK, 2, opcode_address);
     RA_RestoreState(&exception_state);
+    unit_end = ptr;
+    *ptr++ = b_cc(ARM_CC_AL, 0);
 
-    if (opcode & 0x80)
+    if (cmp_dn != dn)
         RA_FreeARMRegister(&ptr, cmp_dn);
     RA_FreeARMRegister(&ptr, src);
 
     *branch_skip_exception = b_cc(ARM_CC_GE, ptr - branch_skip_exception - 2);
+    *unit_end = b_cc(ARM_CC_AL, ptr - unit_end - 2);
     *ptr++ = (uint32_t)(uintptr_t)branch_skip_exception;
-    *ptr++ = 1;
+    *ptr++ = (uint32_t)(uintptr_t)unit_end;
+    *ptr++ = 2;
     *ptr++ = 0;
     *ptr++ = INSN_TO_LE(0xfffffffe);
     *ptr++ = INSN_TO_LE(0xffffffff);
