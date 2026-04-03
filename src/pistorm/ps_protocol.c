@@ -45,6 +45,55 @@ uint32_t CLEAR_BITS = 0;
 
 volatile uint8_t gpio_lock;
 
+static inline uint64_t pistorm_read_cntpct(void)
+{
+#ifdef __aarch64__
+    uint64_t value;
+    asm volatile("mrs %0, CNTPCT_EL0" : "=r"(value));
+    return value;
+#else
+    uint32_t lo;
+    uint32_t hi;
+    asm volatile("mrrc p15, 0, %0, %1, c14" : "=r"(lo), "=r"(hi));
+    return ((uint64_t)hi << 32) | lo;
+#endif
+}
+
+static inline uint32_t pistorm_read_cntfrq(void)
+{
+#ifdef __aarch64__
+    uint64_t value;
+    asm volatile("mrs %0, CNTFRQ_EL0" : "=r"(value));
+    return (uint32_t)value;
+#else
+    uint32_t value;
+    asm volatile("mrc p15, 0, %0, c14, c0, 0" : "=r"(value));
+    return value;
+#endif
+}
+
+static inline uint64_t pistorm_read_pmccntr(void)
+{
+#ifdef __aarch64__
+    uint64_t value;
+    asm volatile("mrs %0, PMCCNTR_EL0" : "=r"(value));
+    return value;
+#else
+    uint32_t value;
+    asm volatile("mrc p15, 0, %0, c9, c13, 0" : "=r"(value));
+    return value;
+#endif
+}
+
+static inline void pistorm_write_cntkctl(uint32_t value)
+{
+#ifdef __aarch64__
+    asm volatile("msr CNTKCTL_EL1, %0" :: "r"((uint64_t)value));
+#else
+    asm volatile("mcr p15, 0, %0, c14, c1, 0" :: "r"(value));
+#endif
+}
+
 static void usleep(uint64_t delta)
 {
     uint64_t hi = LE32(*(volatile uint32_t*)0xf2003008);
@@ -76,20 +125,20 @@ static void usleep(uint64_t delta)
 static inline void ticksleep(uint64_t ticks)
 {
     uint64_t t0 = 0, t1 = 0;
-    asm volatile("mrs %0, CNTPCT_EL0":"=r"(t0));
+    t0 = pistorm_read_cntpct();
     t0 += ticks;
     do {
-        asm volatile("mrs %0, CNTPCT_EL0":"=r"(t1));
+        t1 = pistorm_read_cntpct();
     } while(t1 < t0);
 }
 
 static inline void ticksleep_wfe(uint64_t ticks)
 {
     uint64_t t0 = 0, t1 = 0;
-    asm volatile("mrs %0, CNTPCT_EL0":"=r"(t0));
+    t0 = pistorm_read_cntpct();
     t0 += ticks;
     do {
-        asm volatile("mrs %0, CNTPCT_EL0":"=r"(t1));
+        t1 = pistorm_read_cntpct();
         asm volatile("wfe");
     } while(t1 < t0);
 }
@@ -104,16 +153,16 @@ void bitbang_putByte(uint8_t byte)
         gpio = ((volatile unsigned *)BCM2708_PERI_BASE) + GPIO_ADDR / 4;
 
     uint64_t t0 = 0, t1 = 0;
-    asm volatile("mrs %0, CNTPCT_EL0":"=r"(t0));
+    t0 = pistorm_read_cntpct();
 
     *(gpio + 10) = LE32(TXD_BIT); // Start bit - 0
   
     do {
-        asm volatile("mrs %0, CNTPCT_EL0":"=r"(t1));
+        t1 = pistorm_read_cntpct();
     } while(t1 < (t0 + bitbang_delay));
   
     for (int i=0; i < 8; i++) {
-        asm volatile("mrs %0, CNTPCT_EL0":"=r"(t0));
+        t0 = pistorm_read_cntpct();
 
         if (byte & 1)
             *(gpio + 7) = LE32(TXD_BIT);
@@ -122,15 +171,15 @@ void bitbang_putByte(uint8_t byte)
         byte = byte >> 1;
 
         do {
-            asm volatile("mrs %0, CNTPCT_EL0":"=r"(t1));
+            t1 = pistorm_read_cntpct();
         } while(t1 < (t0 + bitbang_delay));
     }
-    asm volatile("mrs %0, CNTPCT_EL0":"=r"(t0));
+    t0 = pistorm_read_cntpct();
 
     *(gpio + 7) = LE32(TXD_BIT);  // Stop bit - 1
 
     do {
-        asm volatile("mrs %0, CNTPCT_EL0":"=r"(t1));
+        t1 = pistorm_read_cntpct();
     } while(t1 < (t0 + 3*bitbang_delay / 2));
 }
 
@@ -281,7 +330,7 @@ void fastSerial_init()
     if (!gpio)
         gpio = ((volatile unsigned *)BCM2708_PERI_BASE) + GPIO_ADDR / 4;
   
-    asm volatile("mrs %0, CNTFRQ_EL0":"=r"(tmp));
+    tmp = pistorm_read_cntfrq();
 
     if (tmp > 20000000)
     {
@@ -305,7 +354,7 @@ static void setup_gpclk() {
     // Enable 200MHz CLK output on GPIO4, adjust divider and pll source depending
     // on pi model
     uint64_t tmp;
-    asm volatile("mrs %0, CNTFRQ_EL0":"=r"(tmp));
+    tmp = pistorm_read_cntfrq();
 
     *(gpclk + (CLK_GP0_CTL / 4)) = LE32(CLK_PASSWD | (1 << 5));
     usleep(10);
@@ -332,7 +381,7 @@ void ps_setup_protocol() {
     uint64_t delay;
 
     /* Setup bitbang RS232 delay based on the RS232 speed and CPU tick frequency */
-    asm volatile("mrs %0, CNTFRQ_EL0":"=r"(clock));
+    clock = pistorm_read_cntfrq();
     delay = (clock + PISTORM_BITBANG_SPEED / 2) / PISTORM_BITBANG_SPEED;
     bitbang_delay = delay;
 
@@ -340,7 +389,7 @@ void ps_setup_protocol() {
     setup_gpclk();
 
     uint64_t tmp;
-    asm volatile("mrs %0, CNTFRQ_EL0":"=r"(tmp));
+    tmp = pistorm_read_cntfrq();
 
     /* Pi4, CM4 */
     if (tmp > 20000000)
@@ -382,7 +431,7 @@ static void ps_write_8_int(unsigned int address, unsigned int data);
 static void ps_write_16_int(unsigned int address, unsigned int data)
 {
     uint64_t tmp;
-    asm volatile("mrs %0, CNTFRQ_EL0":"=r"(tmp));
+    tmp = pistorm_read_cntfrq();
 
 //    if (address > 0xffffff)
 //        return;
@@ -459,7 +508,7 @@ static void ps_write_16_int(unsigned int address, unsigned int data)
 static void ps_write_8_int(unsigned int address, unsigned int data)
 {
     uint64_t tmp;
-    asm volatile("mrs %0, CNTFRQ_EL0":"=r"(tmp));
+    tmp = pistorm_read_cntfrq();
 
 //    if (address > 0xffffff)
 //        return;
@@ -545,7 +594,7 @@ static void ps_write_32_int(unsigned int address, unsigned int value)
 static unsigned int ps_read_16_int_nowbwait(unsigned int address)
 {
     uint64_t tmp;
-    asm volatile("mrs %0, CNTFRQ_EL0":"=r"(tmp));
+    tmp = pistorm_read_cntfrq();
 
     address &= 0xffffff;
 
@@ -631,7 +680,7 @@ unsigned int ps_read_16_int(unsigned int address)
 unsigned int ps_read_8_int(unsigned int address)
 {
     uint64_t tmp;
-    asm volatile("mrs %0, CNTFRQ_EL0":"=r"(tmp));
+    tmp = pistorm_read_cntfrq();
 
 #if PISTORM_WRITE_BUFFER
     wb_waitfree();
@@ -729,7 +778,7 @@ unsigned int ps_read_32_int(unsigned int address)
 void ps_write_status_reg(unsigned int value)
 {
     uint64_t tmp;
-    asm volatile("mrs %0, CNTFRQ_EL0":"=r"(tmp));
+    tmp = pistorm_read_cntfrq();
 
     *(gpio + 0) = LE32(OUTPUT[0]);
     *(gpio + 1) = LE32(OUTPUT[1]);
@@ -760,7 +809,7 @@ void ps_write_status_reg(unsigned int value)
 unsigned int ps_read_status_reg()
 {
     uint64_t tmp;
-    asm volatile("mrs %0, CNTFRQ_EL0":"=r"(tmp));
+    tmp = pistorm_read_cntfrq();
 
     *(gpio + 7) = LE32(REG_STATUS << PIN_A0);
     *(gpio + 7) = LE32(1 << PIN_RD);
@@ -790,10 +839,17 @@ void ps_reset_state_machine()
 }
 
 #include <boards.h>
+#ifdef __aarch64__
 extern struct ExpansionBoard **board;
 extern struct ExpansionBoard *__boards_start;
 extern int board_idx;
 extern uint32_t overlay;
+#else
+struct ExpansionBoard *__boards_start;
+struct ExpansionBoard **board = &__boards_start;
+int board_idx;
+uint32_t overlay = 1;
+#endif
 
 void ps_pulse_reset()
 {
@@ -832,8 +888,10 @@ void ps_housekeeper()
     uint64_t t0;
     uint64_t last_arm_cnt = arm_cnt;
 
-    asm volatile("mrs %0, CNTPCT_EL0":"=r"(t0));
-    asm volatile("mrs %0, PMCCNTR_EL0":"=r"(last_arm_cnt));
+    t0 = pistorm_read_cntpct();
+    last_arm_cnt = pistorm_read_pmccntr();
+    (void)t0;
+    (void)last_arm_cnt;
 
     kprintf("[HKEEP] Housekeeper activated\n");
     kprintf("[HKEEP] Please note we are burning the cpu with busyloops now\n");
@@ -842,15 +900,15 @@ void ps_housekeeper()
     /* Enable timer regs from EL0, enable event stream on posedge, monitor 2th bit */
     /* This gives a frequency of 2.4MHz for a 19.2MHz timer */
     uint64_t tmp;
-    asm volatile("mrs %0, CNTFRQ_EL0":"=r"(tmp));
+    tmp = pistorm_read_cntfrq();
 
     if (tmp > 20000000)
     {
-        asm volatile("msr CNTKCTL_EL1, %0"::"r"(3 | (1 << 2) | (3 << 8) | (3 << 4)));
+        pistorm_write_cntkctl(3 | (1 << 2) | (3 << 8) | (3 << 4));
     }
     else
     {
-        asm volatile("msr CNTKCTL_EL1, %0"::"r"(3 | (1 << 2) | (3 << 8) | (2 << 4)));
+        pistorm_write_cntkctl(3 | (1 << 2) | (3 << 8) | (2 << 4));
     }
 
     for(;;) {
@@ -1226,7 +1284,7 @@ void ps_buptest(unsigned int test_size, unsigned int maxiter)
 {
     // Initialize RNG
     uint64_t tmp;
-    asm volatile("mrs %0, CNTPCT_EL0":"=r"(tmp));
+    tmp = pistorm_read_cntpct();
 
     _seed = tmp;
 

@@ -146,14 +146,16 @@ if (${VARIANT} IN_LIST SUPPORTED_VARIANTS)
             )
         endif()
         include_directories(src/pistorm)
-        list(APPEND BASE_FILES
-            src/boards/devicetree.c
-            src/boards/z2ram.c                
-            src/boards/sdcard.c
-            src/boards/68040.c
-            src/boards/emmc.c
-            src/boards/unicam.c
-        )
+        if(NOT ${TARGET_ARCH} STREQUAL "armhf")
+            list(APPEND BASE_FILES
+                src/boards/devicetree.c
+                src/boards/z2ram.c
+                src/boards/sdcard.c
+                src/boards/68040.c
+                src/boards/emmc.c
+                src/boards/unicam.c
+            )
+        endif()
     endif()
     
 else()
