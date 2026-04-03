@@ -382,7 +382,11 @@ void ps_setup_protocol() {
 
     /* Setup bitbang RS232 delay based on the RS232 speed and CPU tick frequency */
     clock = pistorm_read_cntfrq();
+#ifdef __aarch64__
     delay = (clock + PISTORM_BITBANG_SPEED / 2) / PISTORM_BITBANG_SPEED;
+#else
+    delay = uldiv(clock + PISTORM_BITBANG_SPEED / 2, PISTORM_BITBANG_SPEED).q;
+#endif
     bitbang_delay = delay;
 
     pistorm_setup_io();

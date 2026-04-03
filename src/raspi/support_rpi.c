@@ -126,6 +126,13 @@ static inline void putByte(void *io_base, char chr)
 #undef ARM_PERIIOBASE
 #define ARM_PERIIOBASE 0xf2000000
 
+#ifndef __aarch64__
+void put_char(uint8_t chr)
+{
+    putByte((void*)ARM_PERIIOBASE, chr);
+}
+#endif
+
 volatile unsigned char print_lock = 0;
 
 void kprintf(const char * restrict format, ...)
