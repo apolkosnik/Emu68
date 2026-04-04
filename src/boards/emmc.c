@@ -1,6 +1,5 @@
 #include <boards.h>
 #include <mmu.h>
-#include <A64.h>
 #include <support.h>
 
 __attribute__((aligned(4096)))

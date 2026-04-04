@@ -1613,11 +1613,13 @@ static uint32_t *EMIT_RESET(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr,
 #else
     uint8_t cc = RA_ModifyCC(&ptr);
     uint8_t tmp = RA_AllocARMRegister(&ptr);
+    uint8_t sp = RA_MapM68kRegister(&ptr, 15);
     uint32_t *branch_privilege = NULL;
     uint32_t *branch_success = NULL;
     uint32_t *privilege_ptr = NULL;
     uint32_t *exception_end = NULL;
 
+    (void)sp;
     ptr = EMIT_FlushPC(ptr);
 
     /* RESET is privileged. Outside supervisor mode it traps. */
@@ -2258,14 +2260,18 @@ static uint32_t *EMIT_MOVEC(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr,
 #ifdef __aarch64__
     uint16_t opcode2 = BE16((*m68k_ptr)[0]);
     uint8_t dr = opcode & 1;
-    uint8_t reg = RA_MapM68kRegister(&ptr, opcode2 >> 12);
+    uint8_t reg;
     uint8_t ctx = RA_GetCTX(&ptr);
     uint8_t cc = RA_ModifyCC(&ptr);
     uint8_t tmp = 0xff;
     uint8_t sp = 0xff;
     uint32_t *tmpptr;
     uint32_t *exception_end;
+    RAStateSnapshot exception_state;
     int illegal = 0;
+
+    reg = dr ? RA_MapM68kRegister(&ptr, opcode2 >> 12)
+             : RA_MapM68kRegisterForWrite(&ptr, opcode2 >> 12);
 
     (*m68k_ptr) += 1;
     ptr = EMIT_FlushPC(ptr);
@@ -2534,14 +2540,18 @@ static uint32_t *EMIT_MOVEC(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr,
 #else
     uint16_t opcode2 = BE16((*m68k_ptr)[0]);
     uint8_t dr = opcode & 1;
-    uint8_t reg = RA_MapM68kRegister(&ptr, opcode2 >> 12);
+    uint8_t reg;
     uint8_t ctx = RA_GetCTX(&ptr);
     uint8_t cc = RA_ModifyCC(&ptr);
     uint8_t tmp = 0xff;
     uint8_t sp = 0xff;
     uint32_t *tmpptr;
     uint32_t *exception_end;
+    RAStateSnapshot exception_state;
     int illegal = 0;
+
+    reg = dr ? RA_MapM68kRegister(&ptr, opcode2 >> 12)
+             : RA_MapM68kRegisterForWrite(&ptr, opcode2 >> 12);
 
     (*m68k_ptr) += 1;
     ptr = EMIT_FlushPC(ptr);
@@ -2738,7 +2748,9 @@ static uint32_t *EMIT_MOVEC(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr,
         *tmp_priv = b_cc(ARM_CC_EQ, ptr - tmp_priv - 2);
 
         /* No supervisor. Update USP, generate exception */
+        RA_SaveState(&exception_state);
         ptr = EMIT_Exception(ptr, VECTOR_PRIVILEGE_VIOLATION, 0);
+        RA_RestoreState(&exception_state);
         exception_end = ptr;
         *ptr++ = b_cc(ARM_CC_AL, 0);
 

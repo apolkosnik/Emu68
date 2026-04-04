@@ -1,6 +1,5 @@
 #include <boards.h>
 #include <mmu.h>
-#include <A64.h>
 #include <devicetree.h>
 #include <support.h>
 
@@ -66,10 +65,11 @@ static void init()
         {
             if (strstr(prop->op_value, "z2_ram_size=8")) {
                 board.rom_size = 8*1024*1024;
+                z2_ram[1] = 0x0000;
                 board.enabled = 1;
                 kprintf("[BOOT]   use 8MB expansion RAM\n");
             }
-            if (strstr(prop->op_value, "z2_ram_size=4")) {
+            else if (strstr(prop->op_value, "z2_ram_size=4")) {
                 board.rom_size = 4*1024*1024;
                 z2_ram[1] = 0x7000;
                 board.enabled = 1;

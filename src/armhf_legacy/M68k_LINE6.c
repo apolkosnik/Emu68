@@ -12,6 +12,8 @@
 #include "M68k.h"
 #include "RegisterAllocator.h"
 
+extern struct M68KState *__m68k_state;
+
 uint32_t *EMIT_BRA(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
 {
     uint8_t bsr = 0;
@@ -114,8 +116,10 @@ uint32_t *EMIT_BRA(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
 #endif
     RA_FreeARMRegister(&ptr, reg);
 
-    /* If branch is done within +- 4KB, try to inline it instead of breaking up the translation unit */
-    if (bra_off >= -EMU68_BRANCH_INLINE_DISTANCE && bra_off <= EMU68_BRANCH_INLINE_DISTANCE) {
+    int32_t var_EMU68_BRANCH_INLINE_DISTANCE = (__m68k_state->JIT_CONTROL >> JCCB_INLINE_RANGE) & JCCB_INLINE_RANGE_MASK;
+
+    /* If branch is done within the configured inline window, try to keep it inside the translation unit. */
+    if (bra_off >= -var_EMU68_BRANCH_INLINE_DISTANCE && bra_off <= var_EMU68_BRANCH_INLINE_DISTANCE) {
         if (bsr) {
             M68K_PushReturnAddress(*m68k_ptr);
         }
@@ -132,9 +136,14 @@ uint32_t *EMIT_BSR(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr) __attrib
 
 uint32_t *EMIT_Bcc(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
 {
-        uint32_t *tmpptr;
+    uint32_t *tmpptr;
     uint8_t m68k_condition = (opcode >> 8) & 15;
     uint8_t success_condition = 0;
+    int32_t var_EMU68_BRANCH_INLINE_DISTANCE = (__m68k_state->JIT_CONTROL >> JCCB_INLINE_RANGE) & JCCB_INLINE_RANGE_MASK;
+    int32_t branch_auto_range = var_EMU68_BRANCH_INLINE_DISTANCE;
+
+    if (branch_auto_range == 0)
+        branch_auto_range = JCCB_INLINE_RANGE_MASK + 1;
 
 #ifndef __aarch64__
     success_condition = EMIT_TestCondition(&ptr, m68k_condition);
@@ -251,7 +260,7 @@ uint32_t *EMIT_Bcc(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
 #if EMU68_DEF_BRANCH_AUTO
     if(
         branch_target < (intptr_t)*m68k_ptr &&
-        ((intptr_t)*m68k_ptr - branch_target) < EMU68_DEF_BRANCH_AUTO_RANGE
+        ((intptr_t)*m68k_ptr - branch_target) < branch_auto_range
     )
         *ptr++ = b_cc(success_condition, 1);
     else
@@ -281,7 +290,7 @@ uint32_t *EMIT_Bcc(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
 #if EMU68_DEF_BRANCH_AUTO
     if(
         branch_target < (intptr_t)*m68k_ptr &&
-        ((intptr_t)*m68k_ptr - branch_target) < EMU68_DEF_BRANCH_AUTO_RANGE
+        ((intptr_t)*m68k_ptr - branch_target) < branch_auto_range
     )
         *m68k_ptr = (uint16_t *)branch_target;
 #else

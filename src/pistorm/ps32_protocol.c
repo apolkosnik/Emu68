@@ -17,6 +17,15 @@
 #include "M68k.h"
 #include "cache.h"
 
+#ifndef __aarch64__
+extern void pistorm_update_overlay_state(uint32_t new_overlay);
+extern void pistorm_force_overlay_state(uint32_t new_overlay);
+extern uint32_t pistorm_prepare_protocol_write(uint32_t address, uint32_t value, uint32_t size);
+extern uint32_t pistorm_finalize_protocol_read(uint32_t address, uint32_t value, uint32_t size);
+#endif
+
+static inline unsigned int maybe_sync_special_write(unsigned int address, unsigned int data, unsigned int size);
+
 //volatile uint8_t gpio_lock;
 //volatile uint32_t gpio_rdval;
 
@@ -445,6 +454,8 @@ static void do_write_access_2s(unsigned int address, unsigned int data, unsigned
 //        gpio_rdval = LE32(rdval);
     }
 
+    data = maybe_sync_special_write(address, data, size);
+
     write_ps_reg(REG_DATA_LO, data & 0xffff);
     if (size == SIZE_LONG)
         write_ps_reg(REG_DATA_HI, (data >> 16) & 0xffff);
@@ -471,6 +482,7 @@ static void do_write_access_2s(unsigned int address, unsigned int data, unsigned
     next_slot = (next_slot + 1) & 1;
 
     if (address >= 0x00bf0000 && address <= 0x00dfffff) ps_read_32(0x00f80000);
+
 }
 
 static inline void do_write_access_64_2s(unsigned int address, uint64_t data)
@@ -843,6 +855,25 @@ static inline uint128_t do_read_access_128_2s(unsigned int address)
 
 static uint write_pending = 0;
 
+#ifndef __aarch64__
+static inline unsigned int maybe_sync_special_write(unsigned int address, unsigned int data, unsigned int size)
+{
+    /*
+     * ARM32 keeps protocol-side bus writes coherent with the central MMIO
+     * state handling. The return value is the effective bus value after any
+     * write-side transform, such as CIABPRB DF0/DFx swapping.
+     */
+    return pistorm_prepare_protocol_write(address, data, size);
+}
+#else
+static inline unsigned int maybe_sync_special_write(unsigned int address, unsigned int data, unsigned int size)
+{
+    (void)address;
+    (void)size;
+    return data;
+}
+#endif
+
 static inline void do_write_access(unsigned int address, unsigned int data, unsigned int size)
 {
     uint32_t rdval = 0;
@@ -850,6 +881,8 @@ static inline void do_write_access(unsigned int address, unsigned int data, unsi
 //    while(__atomic_test_and_set(&gpio_lock, __ATOMIC_ACQUIRE)) asm volatile("yield");
 
     set_output();
+
+    data = maybe_sync_special_write(address, data, size);
 
     write_ps_reg(REG_DATA_LO, data & 0xffff);
     if (size == SIZE_LONG)
@@ -873,7 +906,7 @@ static inline void do_write_access(unsigned int address, unsigned int data, unsi
     }
     else
         write_pending = 1;
-    
+
 //    __atomic_clear(&gpio_lock, __ATOMIC_RELEASE);
 }
 
@@ -1327,15 +1360,27 @@ void ps_write_128(unsigned int address, uint128_t data) {
 }
 
 unsigned int ps_read_8(unsigned int address) {
-    return read_access(address, SIZE_BYTE);
+    unsigned int value = read_access(address, SIZE_BYTE);
+#ifndef __aarch64__
+    value = pistorm_finalize_protocol_read(address, value, 1);
+#endif
+    return value;
 }
 
 unsigned int ps_read_16(unsigned int address) {
-    return read_access(address, SIZE_WORD);
+    unsigned int value = read_access(address, SIZE_WORD);
+#ifndef __aarch64__
+    value = pistorm_finalize_protocol_read(address, value, 2);
+#endif
+    return value;
 }
 
 unsigned int ps_read_32(unsigned int address) {
-    return read_access(address, SIZE_LONG);
+    unsigned int value = read_access(address, SIZE_LONG);
+#ifndef __aarch64__
+    value = pistorm_finalize_protocol_read(address, value, 4);
+#endif
+    return value;
 }
 
 uint64_t ps_read_64(unsigned int address) {
@@ -1356,7 +1401,7 @@ extern struct ExpansionBoard *__boards_start;
 extern int board_idx;
 extern uint32_t overlay;
 #else
-struct ExpansionBoard *__boards_start;
+extern struct ExpansionBoard *__boards_start;
 struct ExpansionBoard **board = &__boards_start;
 int board_idx;
 uint32_t overlay = 1;
@@ -1378,7 +1423,9 @@ void ps_pulse_reset()
     if (use_2slot)
         ps_set_control(CONTROL_INC_EXEC_SLOT);
 
-    overlay = 1;
+#ifndef __aarch64__
+    pistorm_force_overlay_state(1);
+#endif
     board = &__boards_start;
     board_idx = 0;
 }

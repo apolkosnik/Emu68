@@ -4082,8 +4082,94 @@ uint32_t *EMIT_lineF(uint32_t *ptr, uint16_t **m68k_ptr, uint16_t *insn_consumed
     uint16_t opcode = BE16((*m68k_ptr)[0]);
     uint16_t opcode2 = BE16((*m68k_ptr)[1]);
 
+    /* FRESTORE */
+    if ((opcode & ~0x3f) == 0xf340 &&
+        (opcode & 0x30) != 0x00 &&
+        (opcode & 0x38) != 0x20 &&
+        (opcode & 0x3f) <= 0x3b)
+    {
+        uint8_t fpcr = RA_ModifyFPCR(&ptr);
+        uint8_t fpsr = RA_ModifyFPSR(&ptr);
+        uint8_t ext_count = 0;
+
+        if (opcode == 0xf35f)
+        {
+            uint8_t reg_a7 = RA_MapM68kRegister(&ptr, 15);
+
+            RA_SetDirtyM68kRegister(&ptr, 15);
+            *ptr++ = add_immed(reg_a7, reg_a7, 4);
+        }
+        else
+        {
+            uint8_t tmp = 0xff;
+
+            ptr = EMIT_LoadFromEffectiveAddress(ptr, 4, &tmp, opcode & 0x3f, *m68k_ptr, &ext_count, 0, NULL);
+
+            if (tmp != 0xff) {
+                RA_FreeARMRegister(&ptr, tmp);
+            }
+        }
+
+        /* The wrapped ROM path only needs the 4-byte frame popped and FPCR/FPSR reset. */
+        *ptr++ = mov_immed_u16(fpcr, 0, 0);
+        *ptr++ = mov_immed_u16(fpsr, 0, 0);
+
+        (*m68k_ptr) += ext_count;
+        *insn_consumed = 1;
+        ptr = EMIT_AdvancePC(ptr, 2 * (ext_count + 1));
+        ptr = EMIT_FlushPC(ptr);
+    }
+    /* FSAVE */
+    else if ((opcode & ~0x3f) == 0xf300 &&
+             (opcode & 0x30) != 0x00 &&
+             (opcode & 0x38) != 0x18 &&
+             (opcode & 0x3f) <= 0x39)
+    {
+        uint8_t ext_count = 0;
+
+        if (opcode == 0xf327)
+        {
+            uint8_t reg_a7 = RA_MapM68kRegister(&ptr, 15);
+            uint8_t frame_hi = RA_AllocARMRegister(&ptr);
+            uint8_t frame_lo = RA_AllocARMRegister(&ptr);
+
+            RA_SetDirtyM68kRegister(&ptr, 15);
+            *ptr++ = sub_immed(reg_a7, reg_a7, 4);
+
+            /*
+                The wrapped ROM checks byte 1 of the FSAVE frame for 0x18.
+                Emit the 4-byte frame directly to avoid the generic ARM32
+                predecrement long-store path that still perturbs low memory.
+            */
+            *ptr++ = mov_immed_u16(frame_hi, 0x4118, 0);
+            *ptr++ = mov_immed_u16(frame_lo, 0x0000, 0);
+            *ptr++ = strh_offset(reg_a7, frame_hi, 0);
+            *ptr++ = strh_offset(reg_a7, frame_lo, 2);
+
+            RA_FreeARMRegister(&ptr, frame_hi);
+            RA_FreeARMRegister(&ptr, frame_lo);
+        }
+        else
+        {
+            uint8_t tmp = RA_AllocARMRegister(&ptr);
+
+            /*
+                The ROM wrapper checks byte 1 of the saved frame for 0x18 after
+                FSAVE -(A7), so synthesize the 4-byte idle/null frame accordingly.
+            */
+            *ptr++ = mov_immed_u16(tmp, 0, 0);
+            *ptr++ = mov_immed_u16(tmp, 0x4118, 1);
+            ptr = EMIT_StoreToEffectiveAddress(ptr, 4, &tmp, opcode & 0x3f, *m68k_ptr, &ext_count, 0);
+
+            RA_FreeARMRegister(&ptr, tmp);
+        }
+
+        (*m68k_ptr) += ext_count;
+        *insn_consumed = 1;
+        ptr = EMIT_AdvancePC(ptr, 2 * (ext_count + 1));
+    }
     /* Check destination coprocessor - if it is FPU go to separate function */
-    if ((opcode & 0x0e00) == 0x0200)
+    else if ((opcode & 0x0e00) == 0x0200)
     {
         return EMIT_FPU(ptr, m68k_ptr, insn_consumed);
     }

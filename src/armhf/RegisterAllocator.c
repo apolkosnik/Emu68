@@ -666,6 +666,29 @@ void RA_FlushCTX(uint32_t **ptr)
     (void)ptr;
 }
 
+void RA_ResetAllocator()
+{
+    for (int i = 0; i < 16; i++) {
+        LRU_M68kRegisters[i].rs_ARMReg = 0xff;
+        LRU_M68kRegisters[i].rs_Dirty = 0;
+    }
+
+    for (int i = 0; i < 8; i++) {
+        LRU_Table[i] = -1;
+        FPU_Reg_State[i] = 0;
+    }
+
+    register_pool = 0;
+    changed_mask = 0;
+    FPU_AllocState = 0;
+    got_CC = 0;
+    mod_CC = 0;
+    reg_FPCR = 0xff;
+    mod_FPCR = 0;
+    reg_FPSR = 0xff;
+    mod_FPSR = 0;
+}
+
 uint32_t *EMIT_SaveRegFrame(uint32_t *ptr, uint32_t mask)
 {
     mask &= 0xffffu;

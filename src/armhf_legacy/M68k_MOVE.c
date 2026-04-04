@@ -473,21 +473,23 @@ uint32_t *EMIT_move(uint32_t *ptr, uint16_t **m68k_ptr, uint16_t *insn_consumed)
 
 uint32_t GetSR_Line1(uint16_t opcode)
 {
+    extern uint32_t last_PC;
+
     /* MOVEA case - illegal with byte size */
     if ((opcode & 0x01c0) == 0x0040) {
-        kprintf("Undefined Line1\n");
+        kprintf("Undefined Line1 %04x @ %08x\n", opcode, last_PC);
         return SR_CCR << 16;
     }
     
     /* Normal move case: destination allows highest mode + reg of 071 */
     if ((opcode & 0x01c0) == 0x01c0 && (opcode & 0x0e00) > 0x0200) {
-        kprintf("Undefined Line1\n");
+        kprintf("Undefined Line1 %04x @ %08x\n", opcode, last_PC);
         return SR_CCR << 16;
     }
 
     /* Normal move case: source allows highest mode + reg of 074 */
     if ((opcode & 0x0038) == 0x0038 && (opcode & 7) > 4) {
-        kprintf("Undefined Line1\n");
+        kprintf("Undefined Line1 %04x @ %08x\n", opcode, last_PC);
         return SR_CCR << 16;
     }
 
@@ -496,6 +498,8 @@ uint32_t GetSR_Line1(uint16_t opcode)
 
 uint32_t GetSR_Line2(uint16_t opcode)
 {
+    extern uint32_t last_PC;
+
     /* MOVEA case - needs none, sets none */
     if ((opcode & 0x01c0) == 0x0040) {
         return 0;
@@ -503,13 +507,13 @@ uint32_t GetSR_Line2(uint16_t opcode)
 
     /* Normal move case: destination allows highest mode + reg of 071 */
     if ((opcode & 0x01c0) == 0x01c0 && (opcode & 0x0e00) > 0x0200) {
-        kprintf("Undefined Line2\n");
+        kprintf("Undefined Line2 %04x @ %08x\n", opcode, last_PC);
         return SR_CCR << 16;
     }
 
     /* Normal move case: source allows highest mode + reg of 074 */
     if ((opcode & 0x0038) == 0x0038 && (opcode & 7) > 4) {
-        kprintf("Undefined Line2\n");
+        kprintf("Undefined Line2 %04x @ %08x\n", opcode, last_PC);
         return SR_CCR << 16;
     }
 

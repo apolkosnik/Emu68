@@ -6742,7 +6742,7 @@ uint32_t GetSR_LineE(uint16_t opcode)
     }
     /* Instruction not found, i.e. it needs all flags and sets none (ILLEGAL INSTRUCTION exception) */
     else {
-        kprintf("Undefined LineE\n");
+        kprintf("Undefined LineE %04x\n", opcode);
         return SR_CCR << 16;
     }
 }

@@ -23,6 +23,18 @@ SECTIONS
         *(.rodata)
         *(.rodata.*)
         *(.gnu.linkonce.r.*)
+
+        . = ALIGN(4);
+        __init_start = .;
+        *(.init)
+        LONG(0)
+
+        . = ALIGN(4);
+        __boards_start = .;
+        *(.boards.z2)
+        *(.boards.z3)
+        *(.boards)
+        LONG(0)
     }
     .rodata1 : { *(.rodata1) }
 

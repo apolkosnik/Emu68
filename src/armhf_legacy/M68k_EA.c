@@ -12,6 +12,696 @@
 #include "M68k.h"
 #include "RegisterAllocator.h"
 
+#ifndef __aarch64__
+extern void pistorm_handle_overlay_byte_store(uint32_t address, uint32_t value);
+extern void pistorm_handle_special_write(uint32_t address, uint32_t value, uint32_t size);
+extern uint32_t pistorm_handle_special_read(uint32_t address, uint32_t size);
+extern uint32_t pistorm_handle_special_read_trampoline(uint32_t address, uint32_t size);
+extern void pistorm_special_read_callsite_probe(uint32_t address, uint32_t size);
+extern uint32_t overlay;
+
+static inline __attribute__((always_inline)) uint32_t *emit_blx_literal(uint32_t *ptr, uintptr_t target)
+{
+    uint32_t *skip_literal;
+
+    *ptr++ = ldr_offset(15, 12, 4);
+    *ptr++ = blx_cc_reg(ARM_CC_AL, 12);
+    skip_literal = ptr;
+    *ptr++ = b_cc(ARM_CC_AL, 0);
+    *ptr++ = BE32((uint32_t)target);
+    *skip_literal = b_cc(ARM_CC_AL, ptr - skip_literal - 2);
+    return ptr;
+}
+
+static inline __attribute__((always_inline)) uint32_t *emit_overlay_byte_store_hook(uint32_t *ptr, uint8_t addr_reg, uint8_t value_reg)
+{
+    uint8_t tmp = RA_AllocARMRegister(&ptr);
+    uint8_t flags_reg = RA_AllocARMRegister(&ptr);
+    uint16_t scratch_save_mask = (uint16_t)((1 << tmp) | (1 << flags_reg));
+    uint16_t call_save_mask = (uint16_t)(0x0f | (1 << REG_SR) | (1 << REG_CTX) | (1 << 12) | (1 << 14) | (1 << flags_reg));
+    uint32_t *skip_hook;
+    uint32_t *skip_literal;
+    uint32_t *restore_flags;
+
+    *ptr++ = push(scratch_save_mask);
+    *ptr++ = mrs(flags_reg);
+    *ptr++ = movw_immed_u16(tmp, 0xe001);
+    *ptr++ = movt_immed_u16(tmp, 0x00bf);
+    *ptr++ = cmp_reg(addr_reg, tmp);
+    skip_hook = ptr;
+    *ptr++ = b_cc(ARM_CC_NE, 0);
+
+    *ptr++ = push(call_save_mask);
+    if (value_reg == 0 && addr_reg != 0)
+        *ptr++ = mov_reg(tmp, value_reg);
+    if (addr_reg != 0)
+        *ptr++ = mov_reg(0, addr_reg);
+    if (value_reg != 1)
+    {
+        if (value_reg == 0 && addr_reg != 0)
+            *ptr++ = mov_reg(1, tmp);
+        else
+            *ptr++ = mov_reg(1, value_reg);
+    }
+    *ptr++ = ldr_offset(15, 12, 8);
+    *ptr++ = blx_cc_reg(ARM_CC_AL, 12);
+    *ptr++ = pop(call_save_mask);
+    skip_literal = ptr;
+    *ptr++ = b_cc(ARM_CC_AL, 0);
+    *ptr++ = BE32((uint32_t)(uintptr_t)&pistorm_handle_overlay_byte_store);
+    restore_flags = ptr;
+    *ptr++ = msr(flags_reg, 8);
+    *ptr++ = pop(scratch_save_mask);
+
+    *skip_hook = b_cc(ARM_CC_NE, restore_flags - skip_hook - 2);
+    *skip_literal = b_cc(ARM_CC_AL, restore_flags - skip_literal - 2);
+
+    RA_FreeARMRegister(&ptr, flags_reg);
+    RA_FreeARMRegister(&ptr, tmp);
+    return ptr;
+}
+
+static inline __attribute__((always_inline)) uint32_t *emit_special_store_hook(uint32_t *ptr, uint8_t size, uint8_t addr_reg, uint8_t value_reg)
+{
+    uint8_t tmp = RA_AllocARMRegister(&ptr);
+    uint8_t flags_reg = RA_AllocARMRegister(&ptr);
+    uint16_t scratch_save_mask = (uint16_t)((1 << tmp) | (1 << flags_reg));
+    uint32_t *match[16];
+    uint32_t *cia_skip = NULL;
+    uint32_t *cia_match = NULL;
+    uint32_t *cia_after = NULL;
+    uint32_t *custom_skip = NULL;
+    uint32_t *custom_match = NULL;
+    uint32_t *custom_after = NULL;
+    uint32_t *custom_mirror_skip_lo = NULL;
+    uint32_t *custom_mirror_skip_hi = NULL;
+    uint32_t *custom_mirror_match = NULL;
+    uint32_t *custom_mirror_after = NULL;
+    uint32_t *zorro_skip = NULL;
+    uint32_t *zorro_match = NULL;
+    uint32_t *zorro_after = NULL;
+    uint32_t *slow_skip = NULL;
+    uint32_t *slow_match = NULL;
+    uint32_t *slow_after = NULL;
+    uint32_t *c0_skip = NULL;
+    uint32_t *c0_match = NULL;
+    uint32_t *c0_after = NULL;
+    uint32_t *skip_call;
+    uint32_t *skip_literal;
+    uint32_t *call_start;
+    uint32_t *restore_flags;
+    int match_count = 0;
+    const uint16_t save_mask = 0x0f | (1 << REG_SR) | (1 << REG_CTX) | (1 << 12) | (1 << 14);
+    const uint16_t call_save_mask = (uint16_t)(save_mask | (1 << flags_reg));
+
+    *ptr++ = push(scratch_save_mask);
+    *ptr++ = mrs(flags_reg);
+    switch (size)
+    {
+        case 4:
+            *ptr++ = movw_immed_u16(tmp, 0x0000);
+            *ptr++ = movt_immed_u16(tmp, 0x0008);
+            *ptr++ = cmp_reg(addr_reg, tmp);
+            match[match_count++] = ptr;
+            *ptr++ = b_cc(ARM_CC_CC, 0);
+
+            *ptr++ = movw_immed_u16(tmp, 0x0000);
+            *ptr++ = movt_immed_u16(tmp, 0x0008);
+            *ptr++ = cmp_reg(addr_reg, tmp);
+            slow_skip = ptr;
+            *ptr++ = b_cc(ARM_CC_CC, 0);
+
+            *ptr++ = movw_immed_u16(tmp, 0x0000);
+            *ptr++ = movt_immed_u16(tmp, 0x0010);
+            *ptr++ = cmp_reg(addr_reg, tmp);
+            slow_match = ptr;
+            *ptr++ = b_cc(ARM_CC_CC, 0);
+            slow_after = ptr;
+
+            *ptr++ = movw_immed_u16(tmp, 0x0000);
+            *ptr++ = movt_immed_u16(tmp, 0x00c0);
+            *ptr++ = cmp_reg(addr_reg, tmp);
+            c0_skip = ptr;
+            *ptr++ = b_cc(ARM_CC_CC, 0);
+
+            *ptr++ = movw_immed_u16(tmp, 0x0000);
+            *ptr++ = movt_immed_u16(tmp, 0x00e0);
+            *ptr++ = cmp_reg(addr_reg, tmp);
+            c0_match = ptr;
+            *ptr++ = b_cc(ARM_CC_CC, 0);
+            c0_after = ptr;
+            break;
+        case 1:
+            *ptr++ = movw_immed_u16(tmp, 0x0000);
+            *ptr++ = movt_immed_u16(tmp, 0x0008);
+            *ptr++ = cmp_reg(addr_reg, tmp);
+            match[match_count++] = ptr;
+            *ptr++ = b_cc(ARM_CC_CC, 0);
+
+            *ptr++ = movw_immed_u16(tmp, 0xa000);
+            *ptr++ = movt_immed_u16(tmp, 0x00bf);
+            *ptr++ = cmp_reg(addr_reg, tmp);
+            cia_skip = ptr;
+            *ptr++ = b_cc(ARM_CC_CC, 0);
+
+            *ptr++ = movw_immed_u16(tmp, 0xf000);
+            *ptr++ = movt_immed_u16(tmp, 0x00bf);
+            *ptr++ = cmp_reg(addr_reg, tmp);
+            cia_match = ptr;
+            *ptr++ = b_cc(ARM_CC_CC, 0);
+            cia_after = ptr;
+
+            *ptr++ = movw_immed_u16(tmp, 0xf000);
+            *ptr++ = movt_immed_u16(tmp, 0x00df);
+            *ptr++ = cmp_reg(addr_reg, tmp);
+            custom_skip = ptr;
+            *ptr++ = b_cc(ARM_CC_CC, 0);
+
+            *ptr++ = movw_immed_u16(tmp, 0xf200);
+            *ptr++ = movt_immed_u16(tmp, 0x00df);
+            *ptr++ = cmp_reg(addr_reg, tmp);
+            custom_match = ptr;
+            *ptr++ = b_cc(ARM_CC_CC, 0);
+            custom_after = ptr;
+
+            *ptr++ = movw_immed_u16(tmp, 0x0000);
+            *ptr++ = movt_immed_u16(tmp, 0x00c0);
+            *ptr++ = cmp_reg(addr_reg, tmp);
+            custom_mirror_skip_lo = ptr;
+            *ptr++ = b_cc(ARM_CC_CC, 0);
+
+            *ptr++ = movw_immed_u16(tmp, 0x0000);
+            *ptr++ = movt_immed_u16(tmp, 0x00e0);
+            *ptr++ = cmp_reg(addr_reg, tmp);
+            custom_mirror_skip_hi = ptr;
+            *ptr++ = b_cc(ARM_CC_CS, 0);
+
+            *ptr++ = lsr_immed(tmp, addr_reg, 12);
+            *ptr++ = and_immed(tmp, tmp, 0x0f);
+            *ptr++ = cmp_immed(tmp, 0x0f);
+            custom_mirror_match = ptr;
+            *ptr++ = b_cc(ARM_CC_EQ, 0);
+            custom_mirror_after = ptr;
+
+            *ptr++ = movw_immed_u16(tmp, 0x0000);
+            *ptr++ = movt_immed_u16(tmp, 0x00e8);
+            *ptr++ = cmp_reg(addr_reg, tmp);
+            zorro_skip = ptr;
+            *ptr++ = b_cc(ARM_CC_CC, 0);
+
+            *ptr++ = movw_immed_u16(tmp, 0x0000);
+            *ptr++ = movt_immed_u16(tmp, 0x00e9);
+            *ptr++ = cmp_reg(addr_reg, tmp);
+            zorro_match = ptr;
+            *ptr++ = b_cc(ARM_CC_CC, 0);
+            zorro_after = ptr;
+
+            *ptr++ = movw_immed_u16(tmp, 0x0000);
+            *ptr++ = movt_immed_u16(tmp, 0x0008);
+            *ptr++ = cmp_reg(addr_reg, tmp);
+            slow_skip = ptr;
+            *ptr++ = b_cc(ARM_CC_CC, 0);
+
+            *ptr++ = movw_immed_u16(tmp, 0x0000);
+            *ptr++ = movt_immed_u16(tmp, 0x0010);
+            *ptr++ = cmp_reg(addr_reg, tmp);
+            slow_match = ptr;
+            *ptr++ = b_cc(ARM_CC_CC, 0);
+            slow_after = ptr;
+
+            *ptr++ = movw_immed_u16(tmp, 0x0000);
+            *ptr++ = movt_immed_u16(tmp, 0x00c0);
+            *ptr++ = cmp_reg(addr_reg, tmp);
+            c0_skip = ptr;
+            *ptr++ = b_cc(ARM_CC_CC, 0);
+
+            *ptr++ = movw_immed_u16(tmp, 0x0000);
+            *ptr++ = movt_immed_u16(tmp, 0x00e0);
+            *ptr++ = cmp_reg(addr_reg, tmp);
+            c0_match = ptr;
+            *ptr++ = b_cc(ARM_CC_CC, 0);
+            c0_after = ptr;
+            break;
+        case 2:
+            *ptr++ = movw_immed_u16(tmp, 0x0000);
+            *ptr++ = movt_immed_u16(tmp, 0x0008);
+            *ptr++ = cmp_reg(addr_reg, tmp);
+            match[match_count++] = ptr;
+            *ptr++ = b_cc(ARM_CC_CC, 0);
+
+            *ptr++ = movw_immed_u16(tmp, 0xf000);
+            *ptr++ = movt_immed_u16(tmp, 0x00df);
+            *ptr++ = cmp_reg(addr_reg, tmp);
+            custom_skip = ptr;
+            *ptr++ = b_cc(ARM_CC_CC, 0);
+
+            *ptr++ = movw_immed_u16(tmp, 0xf200);
+            *ptr++ = movt_immed_u16(tmp, 0x00df);
+            *ptr++ = cmp_reg(addr_reg, tmp);
+            custom_match = ptr;
+            *ptr++ = b_cc(ARM_CC_CC, 0);
+            custom_after = ptr;
+
+            *ptr++ = movw_immed_u16(tmp, 0x0000);
+            *ptr++ = movt_immed_u16(tmp, 0x00c0);
+            *ptr++ = cmp_reg(addr_reg, tmp);
+            custom_mirror_skip_lo = ptr;
+            *ptr++ = b_cc(ARM_CC_CC, 0);
+
+            *ptr++ = movw_immed_u16(tmp, 0x0000);
+            *ptr++ = movt_immed_u16(tmp, 0x00e0);
+            *ptr++ = cmp_reg(addr_reg, tmp);
+            custom_mirror_skip_hi = ptr;
+            *ptr++ = b_cc(ARM_CC_CS, 0);
+
+            *ptr++ = lsr_immed(tmp, addr_reg, 12);
+            *ptr++ = and_immed(tmp, tmp, 0x0f);
+            *ptr++ = cmp_immed(tmp, 0x0f);
+            custom_mirror_match = ptr;
+            *ptr++ = b_cc(ARM_CC_EQ, 0);
+            custom_mirror_after = ptr;
+
+            *ptr++ = movw_immed_u16(tmp, 0x0000);
+            *ptr++ = movt_immed_u16(tmp, 0x0008);
+            *ptr++ = cmp_reg(addr_reg, tmp);
+            slow_skip = ptr;
+            *ptr++ = b_cc(ARM_CC_CC, 0);
+
+            *ptr++ = movw_immed_u16(tmp, 0x0000);
+            *ptr++ = movt_immed_u16(tmp, 0x0010);
+            *ptr++ = cmp_reg(addr_reg, tmp);
+            slow_match = ptr;
+            *ptr++ = b_cc(ARM_CC_CC, 0);
+            slow_after = ptr;
+
+            *ptr++ = movw_immed_u16(tmp, 0x0000);
+            *ptr++ = movt_immed_u16(tmp, 0x00c0);
+            *ptr++ = cmp_reg(addr_reg, tmp);
+            c0_skip = ptr;
+            *ptr++ = b_cc(ARM_CC_CC, 0);
+
+            *ptr++ = movw_immed_u16(tmp, 0x0000);
+            *ptr++ = movt_immed_u16(tmp, 0x00c8);
+            *ptr++ = cmp_reg(addr_reg, tmp);
+            c0_match = ptr;
+            *ptr++ = b_cc(ARM_CC_CC, 0);
+            c0_after = ptr;
+            break;
+        default:
+            RA_FreeARMRegister(&ptr, tmp);
+            return ptr;
+    }
+
+    skip_call = ptr;
+    *ptr++ = b_cc(ARM_CC_AL, 0);
+    call_start = ptr;
+
+    *ptr++ = push(call_save_mask);
+    if (value_reg == 0 && addr_reg != 0)
+        *ptr++ = mov_reg(tmp, value_reg);
+    if (addr_reg != 0)
+        *ptr++ = mov_reg(0, addr_reg);
+    if (value_reg != 1)
+    {
+        if (value_reg == 0 && addr_reg != 0)
+            *ptr++ = mov_reg(1, tmp);
+        else
+            *ptr++ = mov_reg(1, value_reg);
+    }
+    *ptr++ = mov_immed_u8(2, size);
+    *ptr++ = ldr_offset(15, 12, 8);
+    *ptr++ = blx_cc_reg(ARM_CC_AL, 12);
+    *ptr++ = pop(call_save_mask);
+    skip_literal = ptr;
+    *ptr++ = b_cc(ARM_CC_AL, 0);
+    *ptr++ = BE32((uint32_t)(uintptr_t)&pistorm_handle_special_write);
+    restore_flags = ptr;
+    *ptr++ = msr(flags_reg, 8);
+    *ptr++ = pop(scratch_save_mask);
+
+    for (int i = 0; i < match_count; ++i)
+        *match[i] = b_cc(ARM_CC_CC, call_start - match[i] - 2);
+    if (cia_skip != NULL)
+        *cia_skip = b_cc(ARM_CC_CC, cia_after - cia_skip - 2);
+    if (cia_match != NULL)
+        *cia_match = b_cc(ARM_CC_CC, call_start - cia_match - 2);
+    if (custom_skip != NULL)
+        *custom_skip = b_cc(ARM_CC_CC, custom_after - custom_skip - 2);
+    if (custom_match != NULL)
+        *custom_match = b_cc(ARM_CC_CC, call_start - custom_match - 2);
+    if (custom_mirror_skip_lo != NULL)
+        *custom_mirror_skip_lo = b_cc(ARM_CC_CC, custom_mirror_after - custom_mirror_skip_lo - 2);
+    if (custom_mirror_skip_hi != NULL)
+        *custom_mirror_skip_hi = b_cc(ARM_CC_CS, custom_mirror_after - custom_mirror_skip_hi - 2);
+    if (custom_mirror_match != NULL)
+        *custom_mirror_match = b_cc(ARM_CC_EQ, call_start - custom_mirror_match - 2);
+    if (zorro_skip != NULL)
+        *zorro_skip = b_cc(ARM_CC_CC, zorro_after - zorro_skip - 2);
+    if (zorro_match != NULL)
+        *zorro_match = b_cc(ARM_CC_CC, call_start - zorro_match - 2);
+    if (slow_skip != NULL)
+        *slow_skip = b_cc(ARM_CC_CC, slow_after - slow_skip - 2);
+    if (slow_match != NULL)
+        *slow_match = b_cc(ARM_CC_CC, call_start - slow_match - 2);
+    if (c0_skip != NULL)
+        *c0_skip = b_cc(ARM_CC_CC, c0_after - c0_skip - 2);
+    if (c0_match != NULL)
+        *c0_match = b_cc(ARM_CC_CC, call_start - c0_match - 2);
+    *skip_call = b_cc(ARM_CC_AL, restore_flags - skip_call - 2);
+    *skip_literal = b_cc(ARM_CC_AL, restore_flags - skip_literal - 2);
+
+    RA_FreeARMRegister(&ptr, flags_reg);
+    RA_FreeARMRegister(&ptr, tmp);
+    return ptr;
+}
+
+static inline __attribute__((always_inline)) uint32_t *emit_special_load_hook(uint32_t *ptr, uint8_t size, uint8_t addr_reg, uint8_t value_reg)
+{
+    uint8_t cmp_tmp = RA_AllocARMRegister(&ptr);
+    uint8_t flags_reg = RA_AllocARMRegister(&ptr);
+    uint16_t scratch_save_mask = (uint16_t)((1 << cmp_tmp) | (1 << flags_reg));
+    uint32_t *match[16];
+    uint32_t *cia_skip = NULL;
+    uint32_t *cia_match = NULL;
+    uint32_t *cia_after = NULL;
+    uint32_t *custom_skip = NULL;
+    uint32_t *custom_match = NULL;
+    uint32_t *custom_after = NULL;
+    uint32_t *custom_mirror_skip_lo = NULL;
+    uint32_t *custom_mirror_skip_hi = NULL;
+    uint32_t *custom_mirror_match = NULL;
+    uint32_t *custom_mirror_after = NULL;
+    uint32_t *zorro_skip = NULL;
+    uint32_t *zorro_match = NULL;
+    uint32_t *zorro_after = NULL;
+    uint32_t *slow_skip = NULL;
+    uint32_t *slow_match = NULL;
+    uint32_t *slow_after = NULL;
+    uint32_t *c0_skip = NULL;
+    uint32_t *c0_match = NULL;
+    uint32_t *c0_after = NULL;
+    uint32_t *skip_call;
+    uint32_t *skip_literal;
+    uint32_t *call_start;
+    uint32_t *restore_flags;
+    int match_count = 0;
+    const uint16_t save_mask = 0x0f | (1 << REG_SR) | (1 << REG_CTX) | (1 << 12) | (1 << 14);
+    const uint16_t call_save_mask = (uint16_t)((save_mask | (1 << flags_reg)) & ~(1 << value_reg));
+
+    *ptr++ = push(scratch_save_mask);
+    *ptr++ = mrs(flags_reg);
+    switch (size)
+    {
+        case 4:
+            /*
+             * Low-memory longword reads are safe through the raw ARM32 mapping
+             * now that page-0 overlay and fake low RAM are mapped directly.
+             * Avoid the special-read helper for this range so wrapped-ROM
+             * compare loops can stay on the normal fast path.
+             */
+            *ptr++ = movw_immed_u16(cmp_tmp, 0x0000);
+            *ptr++ = movt_immed_u16(cmp_tmp, 0x0008);
+            *ptr++ = cmp_reg(addr_reg, cmp_tmp);
+
+            *ptr++ = movw_immed_u16(cmp_tmp, 0x0000);
+            *ptr++ = movt_immed_u16(cmp_tmp, 0x0008);
+            *ptr++ = cmp_reg(addr_reg, cmp_tmp);
+            slow_skip = ptr;
+            *ptr++ = b_cc(ARM_CC_CC, 0);
+
+            *ptr++ = movw_immed_u16(cmp_tmp, 0x0000);
+            *ptr++ = movt_immed_u16(cmp_tmp, 0x0010);
+            *ptr++ = cmp_reg(addr_reg, cmp_tmp);
+            slow_match = ptr;
+            *ptr++ = b_cc(ARM_CC_CC, 0);
+            slow_after = ptr;
+
+            *ptr++ = movw_immed_u16(cmp_tmp, 0x0000);
+            *ptr++ = movt_immed_u16(cmp_tmp, 0x00c0);
+            *ptr++ = cmp_reg(addr_reg, cmp_tmp);
+            c0_skip = ptr;
+            *ptr++ = b_cc(ARM_CC_CC, 0);
+
+            *ptr++ = movw_immed_u16(cmp_tmp, 0x0000);
+            *ptr++ = movt_immed_u16(cmp_tmp, 0x00e0);
+            *ptr++ = cmp_reg(addr_reg, cmp_tmp);
+            c0_match = ptr;
+            *ptr++ = b_cc(ARM_CC_CC, 0);
+            c0_after = ptr;
+            break;
+        case 1:
+            *ptr++ = movw_immed_u16(cmp_tmp, 0x0000);
+            *ptr++ = movt_immed_u16(cmp_tmp, 0x0008);
+            *ptr++ = cmp_reg(addr_reg, cmp_tmp);
+            match[match_count++] = ptr;
+            *ptr++ = b_cc(ARM_CC_CC, 0);
+
+            *ptr++ = movw_immed_u16(cmp_tmp, 0xa000);
+            *ptr++ = movt_immed_u16(cmp_tmp, 0x00bf);
+            *ptr++ = cmp_reg(addr_reg, cmp_tmp);
+            cia_skip = ptr;
+            *ptr++ = b_cc(ARM_CC_CC, 0);
+
+            *ptr++ = movw_immed_u16(cmp_tmp, 0xf000);
+            *ptr++ = movt_immed_u16(cmp_tmp, 0x00bf);
+            *ptr++ = cmp_reg(addr_reg, cmp_tmp);
+            cia_match = ptr;
+            *ptr++ = b_cc(ARM_CC_CC, 0);
+            cia_after = ptr;
+
+            *ptr++ = movw_immed_u16(cmp_tmp, 0xf000);
+            *ptr++ = movt_immed_u16(cmp_tmp, 0x00df);
+            *ptr++ = cmp_reg(addr_reg, cmp_tmp);
+            custom_skip = ptr;
+            *ptr++ = b_cc(ARM_CC_CC, 0);
+
+            *ptr++ = movw_immed_u16(cmp_tmp, 0xf200);
+            *ptr++ = movt_immed_u16(cmp_tmp, 0x00df);
+            *ptr++ = cmp_reg(addr_reg, cmp_tmp);
+            custom_match = ptr;
+            *ptr++ = b_cc(ARM_CC_CC, 0);
+            custom_after = ptr;
+
+            *ptr++ = movw_immed_u16(cmp_tmp, 0x0000);
+            *ptr++ = movt_immed_u16(cmp_tmp, 0x00c0);
+            *ptr++ = cmp_reg(addr_reg, cmp_tmp);
+            custom_mirror_skip_lo = ptr;
+            *ptr++ = b_cc(ARM_CC_CC, 0);
+
+            *ptr++ = movw_immed_u16(cmp_tmp, 0x0000);
+            *ptr++ = movt_immed_u16(cmp_tmp, 0x00e0);
+            *ptr++ = cmp_reg(addr_reg, cmp_tmp);
+            custom_mirror_skip_hi = ptr;
+            *ptr++ = b_cc(ARM_CC_CS, 0);
+
+            *ptr++ = lsr_immed(cmp_tmp, addr_reg, 12);
+            *ptr++ = and_immed(cmp_tmp, cmp_tmp, 0x0f);
+            *ptr++ = cmp_immed(cmp_tmp, 0x0f);
+            custom_mirror_match = ptr;
+            *ptr++ = b_cc(ARM_CC_EQ, 0);
+            custom_mirror_after = ptr;
+
+            *ptr++ = movw_immed_u16(cmp_tmp, 0x0000);
+            *ptr++ = movt_immed_u16(cmp_tmp, 0x00e8);
+            *ptr++ = cmp_reg(addr_reg, cmp_tmp);
+            zorro_skip = ptr;
+            *ptr++ = b_cc(ARM_CC_CC, 0);
+
+            *ptr++ = movw_immed_u16(cmp_tmp, 0x0000);
+            *ptr++ = movt_immed_u16(cmp_tmp, 0x00e9);
+            *ptr++ = cmp_reg(addr_reg, cmp_tmp);
+            zorro_match = ptr;
+            *ptr++ = b_cc(ARM_CC_CC, 0);
+            zorro_after = ptr;
+
+            *ptr++ = movw_immed_u16(cmp_tmp, 0x0000);
+            *ptr++ = movt_immed_u16(cmp_tmp, 0x0008);
+            *ptr++ = cmp_reg(addr_reg, cmp_tmp);
+            slow_skip = ptr;
+            *ptr++ = b_cc(ARM_CC_CC, 0);
+
+            *ptr++ = movw_immed_u16(cmp_tmp, 0x0000);
+            *ptr++ = movt_immed_u16(cmp_tmp, 0x0010);
+            *ptr++ = cmp_reg(addr_reg, cmp_tmp);
+            slow_match = ptr;
+            *ptr++ = b_cc(ARM_CC_CC, 0);
+            slow_after = ptr;
+
+            *ptr++ = movw_immed_u16(cmp_tmp, 0x0000);
+            *ptr++ = movt_immed_u16(cmp_tmp, 0x00c0);
+            *ptr++ = cmp_reg(addr_reg, cmp_tmp);
+            c0_skip = ptr;
+            *ptr++ = b_cc(ARM_CC_CC, 0);
+
+            *ptr++ = movw_immed_u16(cmp_tmp, 0x0000);
+            *ptr++ = movt_immed_u16(cmp_tmp, 0x00e0);
+            *ptr++ = cmp_reg(addr_reg, cmp_tmp);
+            c0_match = ptr;
+            *ptr++ = b_cc(ARM_CC_CC, 0);
+            c0_after = ptr;
+            break;
+        case 2:
+            *ptr++ = movw_immed_u16(cmp_tmp, 0x0000);
+            *ptr++ = movt_immed_u16(cmp_tmp, 0x0008);
+            *ptr++ = cmp_reg(addr_reg, cmp_tmp);
+            match[match_count++] = ptr;
+            *ptr++ = b_cc(ARM_CC_CC, 0);
+
+            *ptr++ = movw_immed_u16(cmp_tmp, 0xf000);
+            *ptr++ = movt_immed_u16(cmp_tmp, 0x00df);
+            *ptr++ = cmp_reg(addr_reg, cmp_tmp);
+            custom_skip = ptr;
+            *ptr++ = b_cc(ARM_CC_CC, 0);
+
+            *ptr++ = movw_immed_u16(cmp_tmp, 0xf200);
+            *ptr++ = movt_immed_u16(cmp_tmp, 0x00df);
+            *ptr++ = cmp_reg(addr_reg, cmp_tmp);
+            custom_match = ptr;
+            *ptr++ = b_cc(ARM_CC_CC, 0);
+            custom_after = ptr;
+
+            *ptr++ = movw_immed_u16(cmp_tmp, 0x0000);
+            *ptr++ = movt_immed_u16(cmp_tmp, 0x00c0);
+            *ptr++ = cmp_reg(addr_reg, cmp_tmp);
+            custom_mirror_skip_lo = ptr;
+            *ptr++ = b_cc(ARM_CC_CC, 0);
+
+            *ptr++ = movw_immed_u16(cmp_tmp, 0x0000);
+            *ptr++ = movt_immed_u16(cmp_tmp, 0x00e0);
+            *ptr++ = cmp_reg(addr_reg, cmp_tmp);
+            custom_mirror_skip_hi = ptr;
+            *ptr++ = b_cc(ARM_CC_CS, 0);
+
+            *ptr++ = lsr_immed(cmp_tmp, addr_reg, 12);
+            *ptr++ = and_immed(cmp_tmp, cmp_tmp, 0x0f);
+            *ptr++ = cmp_immed(cmp_tmp, 0x0f);
+            custom_mirror_match = ptr;
+            *ptr++ = b_cc(ARM_CC_EQ, 0);
+            custom_mirror_after = ptr;
+
+            *ptr++ = movw_immed_u16(cmp_tmp, 0x0000);
+            *ptr++ = movt_immed_u16(cmp_tmp, 0x0008);
+            *ptr++ = cmp_reg(addr_reg, cmp_tmp);
+            slow_skip = ptr;
+            *ptr++ = b_cc(ARM_CC_CC, 0);
+
+            *ptr++ = movw_immed_u16(cmp_tmp, 0x0000);
+            *ptr++ = movt_immed_u16(cmp_tmp, 0x0010);
+            *ptr++ = cmp_reg(addr_reg, cmp_tmp);
+            slow_match = ptr;
+            *ptr++ = b_cc(ARM_CC_CC, 0);
+            slow_after = ptr;
+
+            *ptr++ = movw_immed_u16(cmp_tmp, 0x0000);
+            *ptr++ = movt_immed_u16(cmp_tmp, 0x00c0);
+            *ptr++ = cmp_reg(addr_reg, cmp_tmp);
+            c0_skip = ptr;
+            *ptr++ = b_cc(ARM_CC_CC, 0);
+
+            *ptr++ = movw_immed_u16(cmp_tmp, 0x0000);
+            *ptr++ = movt_immed_u16(cmp_tmp, 0x00c8);
+            *ptr++ = cmp_reg(addr_reg, cmp_tmp);
+            c0_match = ptr;
+            *ptr++ = b_cc(ARM_CC_CC, 0);
+            c0_after = ptr;
+            break;
+        default:
+            RA_FreeARMRegister(&ptr, cmp_tmp);
+            return ptr;
+    }
+
+    skip_call = ptr;
+    *ptr++ = b_cc(ARM_CC_AL, 0);
+    call_start = ptr;
+
+    *ptr++ = push(call_save_mask);
+    if (addr_reg != 0)
+        *ptr++ = mov_reg(0, addr_reg);
+    *ptr++ = mov_immed_u8(1, size);
+    *ptr++ = push(0x0003);
+    ptr = emit_blx_literal(ptr, (uintptr_t)&pistorm_special_read_callsite_probe);
+    *ptr++ = pop(0x0003);
+    ptr = emit_blx_literal(ptr, (uintptr_t)&pistorm_handle_special_read_trampoline);
+    if (value_reg != 0)
+        *ptr++ = mov_reg(value_reg, 0);
+    *ptr++ = pop(call_save_mask);
+    skip_literal = ptr;
+    *ptr++ = b_cc(ARM_CC_AL, 0);
+    restore_flags = ptr;
+    *ptr++ = msr(flags_reg, 8);
+    *ptr++ = pop(scratch_save_mask);
+
+    for (int i = 0; i < match_count; ++i)
+        *match[i] = b_cc(ARM_CC_CC, call_start - match[i] - 2);
+    if (cia_skip != NULL)
+        *cia_skip = b_cc(ARM_CC_CC, cia_after - cia_skip - 2);
+    if (cia_match != NULL)
+        *cia_match = b_cc(ARM_CC_CC, call_start - cia_match - 2);
+    if (custom_skip != NULL)
+        *custom_skip = b_cc(ARM_CC_CC, custom_after - custom_skip - 2);
+    if (custom_match != NULL)
+        *custom_match = b_cc(ARM_CC_CC, call_start - custom_match - 2);
+    if (custom_mirror_skip_lo != NULL)
+        *custom_mirror_skip_lo = b_cc(ARM_CC_CC, custom_mirror_after - custom_mirror_skip_lo - 2);
+    if (custom_mirror_skip_hi != NULL)
+        *custom_mirror_skip_hi = b_cc(ARM_CC_CS, custom_mirror_after - custom_mirror_skip_hi - 2);
+    if (custom_mirror_match != NULL)
+        *custom_mirror_match = b_cc(ARM_CC_EQ, call_start - custom_mirror_match - 2);
+    if (zorro_skip != NULL)
+        *zorro_skip = b_cc(ARM_CC_CC, zorro_after - zorro_skip - 2);
+    if (zorro_match != NULL)
+        *zorro_match = b_cc(ARM_CC_CC, call_start - zorro_match - 2);
+    if (slow_skip != NULL)
+        *slow_skip = b_cc(ARM_CC_CC, slow_after - slow_skip - 2);
+    if (slow_match != NULL)
+        *slow_match = b_cc(ARM_CC_CC, call_start - slow_match - 2);
+    if (c0_skip != NULL)
+        *c0_skip = b_cc(ARM_CC_CC, c0_after - c0_skip - 2);
+    if (c0_match != NULL)
+        *c0_match = b_cc(ARM_CC_CC, call_start - c0_match - 2);
+    *skip_call = b_cc(ARM_CC_AL, restore_flags - skip_call - 2);
+    *skip_literal = b_cc(ARM_CC_AL, restore_flags - skip_literal - 2);
+
+    RA_FreeARMRegister(&ptr, flags_reg);
+    RA_FreeARMRegister(&ptr, cmp_tmp);
+    return ptr;
+}
+
+static inline __attribute__((always_inline)) uint32_t *emit_special_load_helper_only(uint32_t *ptr, uint8_t size, uint8_t addr_reg, uint8_t value_reg)
+{
+    uint8_t flags_reg = RA_AllocARMRegister(&ptr);
+    uint16_t scratch_save_mask = (uint16_t)(1 << flags_reg);
+    uint32_t *skip_literal;
+    uint32_t *restore_flags;
+    const uint16_t save_mask = 0x0f | (1 << REG_SR) | (1 << REG_CTX) | (1 << 12) | (1 << 14);
+    const uint16_t call_save_mask = (uint16_t)((save_mask | (1 << flags_reg)) & ~(1 << value_reg));
+
+    *ptr++ = push(scratch_save_mask);
+    *ptr++ = mrs(flags_reg);
+    *ptr++ = push(call_save_mask);
+    if (addr_reg != 0)
+        *ptr++ = mov_reg(0, addr_reg);
+    *ptr++ = mov_immed_u8(1, size);
+    *ptr++ = push(0x0003);
+    ptr = emit_blx_literal(ptr, (uintptr_t)&pistorm_special_read_callsite_probe);
+    *ptr++ = pop(0x0003);
+    ptr = emit_blx_literal(ptr, (uintptr_t)&pistorm_handle_special_read_trampoline);
+    if (value_reg != 0)
+        *ptr++ = mov_reg(value_reg, 0);
+    *ptr++ = pop(call_save_mask);
+    skip_literal = ptr;
+    *ptr++ = b_cc(ARM_CC_AL, 0);
+    restore_flags = ptr;
+    *ptr++ = msr(flags_reg, 8);
+    *ptr++ = pop(scratch_save_mask);
+
+    *skip_literal = b_cc(ARM_CC_AL, restore_flags - skip_literal - 2);
+
+    RA_FreeARMRegister(&ptr, flags_reg);
+    return ptr;
+}
+#endif
+
 static inline __attribute__((always_inline)) uint32_t * load_s16_ext32(uint32_t *ptr, uint8_t reg, int16_t s16)
 {
 #ifdef __aarch64__
@@ -34,6 +724,7 @@ static inline __attribute__((always_inline)) uint32_t * load_s16_ext32(uint32_t 
 static inline __attribute__((always_inline)) uint32_t * load_reg_from_addr_offset(uint32_t *ptr, uint8_t size, uint8_t base, uint8_t reg, int32_t offset, uint8_t offset_32bit)
 {
     uint8_t reg_d16 = RA_AllocARMRegister(&ptr);
+    uint8_t hook_addr_reg = base;
 
     int free_base = 0;
 
@@ -46,6 +737,8 @@ static inline __attribute__((always_inline)) uint32_t * load_reg_from_addr_offse
 
 #ifndef __aarch64__
     if (size == 0 ||
+        (size == 1 && (offset < -255 || offset > 255)) ||
+        (size == 4 && (offset < -255 || offset > 255)) ||
         (size == 2 && (offset < -255 || offset > 255)) ||
         (offset < -4095 || offset > 4095))
     {
@@ -104,10 +797,223 @@ static inline __attribute__((always_inline)) uint32_t * load_reg_from_addr_offse
                 *ptr++ = ldr_offset(reg_d16, reg, 0);
             }
 #else
-                if (offset > -4096 && offset < 4096)
-                    *ptr++ = ldr_offset(base, reg, offset);
+                if (offset == 0)
+                {
+                    uint8_t low_reg = RA_AllocARMRegister(&ptr);
+                    uint32_t *fast_load;
+                    uint32_t *slow_done;
+                    uint32_t *fast_target;
+                    uint32_t *fast_done;
+                    uint32_t *load_done;
+
+                    /*
+                     * Plain zero-offset longword reads back (An), (An)+ and
+                     * -(An) on ARM32. Use the simpler direct load sequence
+                     * here and let the shared special-read hook override
+                     * low-memory/MMIO ranges afterwards. The heavier offset
+                     * helper path was corrupting Dn in DiagROM's FixBitplane
+                     * (move.l (a1)+,d0) loop.
+                     */
+                    *ptr++ = tst_immed(base, 2);
+                    fast_load = ptr;
+                    *ptr++ = b_cc(ARM_CC_EQ, 0);
+                    *ptr++ = ldrh_offset(base, reg, 0);
+                    *ptr++ = ldrh_offset(base, low_reg, 2);
+                    *ptr++ = lsl_immed(reg, reg, 16);
+                    *ptr++ = orr_reg(reg, reg, low_reg, 0);
+                    slow_done = ptr;
+                    *ptr++ = b_cc(ARM_CC_AL, 0);
+                    fast_target = ptr;
+                    *ptr++ = ldr_offset(base, reg, 0);
+                    fast_done = ptr;
+                    *ptr++ = b_cc(ARM_CC_AL, 0);
+                    load_done = ptr;
+
+                    *fast_load = b_cc(ARM_CC_EQ, fast_target - fast_load - 2);
+                    *slow_done = b_cc(ARM_CC_AL, load_done - slow_done - 2);
+                    *fast_done = b_cc(ARM_CC_AL, load_done - fast_done - 2);
+
+                    RA_FreeARMRegister(&ptr, low_reg);
+                }
                 else
-                    *ptr++ = ldr_regoffset(base, reg, reg_d16, 0);
+                {
+                    uint8_t addr_reg = reg_d16;
+                    uint8_t low_reg = RA_AllocARMRegister(&ptr);
+                    uint8_t cmp_tmp = RA_AllocARMRegister(&ptr);
+                    uint8_t flags_reg = RA_AllocARMRegister(&ptr);
+                    uint16_t scratch_save_mask = (uint16_t)((1 << cmp_tmp) | (1 << flags_reg));
+                    const uint16_t save_mask = 0x0f | (1 << REG_SR) | (1 << REG_CTX) | (1 << 12) | (1 << 14);
+                    const uint16_t call_save_mask = (uint16_t)((save_mask | (1 << flags_reg)) & ~(1 << reg));
+                    uint32_t *slow_skip = NULL;
+                    uint32_t *slow_match = NULL;
+                    uint32_t *slow_after = NULL;
+                    uint32_t *c0_skip = NULL;
+                    uint32_t *c0_match = NULL;
+                    uint32_t *c0_after = NULL;
+                    uint32_t *rom_direct = NULL;
+                    uint32_t *low_match = NULL;
+                    uint32_t *low_overlay_check;
+                    uint32_t *low_overlay_direct;
+                    uint32_t *low_overlay_call;
+                    uint32_t *direct_restore;
+                    uint32_t *direct_entry;
+                    uint32_t *direct_fast;
+                    uint32_t *direct_done;
+                    uint32_t *direct_fast_target;
+                    uint32_t *call_start;
+                    uint32_t *skip_literal;
+                    uint32_t *restore_start;
+                    uint32_t *direct_restore_done;
+                    uint32_t *direct_fast_done;
+                    uint32_t *helper_restore_done;
+                    uint32_t *load_complete;
+
+                    if (offset == 0)
+                        *ptr++ = mov_reg(addr_reg, base);
+                    else if (offset > -256 && offset < 256)
+                    {
+                        if (offset > 0)
+                            *ptr++ = add_immed(addr_reg, base, offset);
+                        else
+                            *ptr++ = sub_immed(addr_reg, base, -offset);
+                    }
+                    else
+                    {
+                        *ptr++ = add_reg(addr_reg, base, reg_d16, 0);
+                    }
+
+                    *ptr++ = push(scratch_save_mask);
+                    *ptr++ = mrs(flags_reg);
+
+                    /*
+                     * Kickstart space at 0x00f00000+ does not need any of the
+                     * PiStorm helper range probes below. Jump straight to the
+                     * direct longword load path so ROM checksum loops are not
+                     * dominated by helper scaffolding. The scratch/flags save
+                     * must happen before this branch, because the direct path
+                     * restores it before returning to the unit epilogue.
+                     */
+                    *ptr++ = movw_immed_u16(cmp_tmp, 0x0000);
+                    *ptr++ = movt_immed_u16(cmp_tmp, 0x00f0);
+                    *ptr++ = cmp_reg(addr_reg, cmp_tmp);
+                    rom_direct = ptr;
+                    *ptr++ = b_cc(ARM_CC_CS, 0);
+
+                    /*
+                     * On ARM32, low-memory and C0-window accesses are handled
+                     * by the PiStorm helper. Probe those ranges before the raw
+                     * halfword pair, otherwise real-ROM low-memory reads can
+                     * stall before the helper gets a chance to override them.
+                     */
+
+                    *ptr++ = movw_immed_u16(cmp_tmp, 0x0000);
+                    *ptr++ = movt_immed_u16(cmp_tmp, 0x0008);
+                    *ptr++ = cmp_reg(addr_reg, cmp_tmp);
+                    low_match = ptr;
+                    *ptr++ = b_cc(ARM_CC_CC, 0);
+
+                    *ptr++ = movw_immed_u16(cmp_tmp, 0x0000);
+                    *ptr++ = movt_immed_u16(cmp_tmp, 0x0008);
+                    *ptr++ = cmp_reg(addr_reg, cmp_tmp);
+                    slow_skip = ptr;
+                    *ptr++ = b_cc(ARM_CC_CC, 0);
+
+                    *ptr++ = movw_immed_u16(cmp_tmp, 0x0000);
+                    *ptr++ = movt_immed_u16(cmp_tmp, 0x0010);
+                    *ptr++ = cmp_reg(addr_reg, cmp_tmp);
+                    slow_match = ptr;
+                    *ptr++ = b_cc(ARM_CC_CC, 0);
+                    slow_after = ptr;
+
+                    *ptr++ = movw_immed_u16(cmp_tmp, 0x0000);
+                    *ptr++ = movt_immed_u16(cmp_tmp, 0x00c0);
+                    *ptr++ = cmp_reg(addr_reg, cmp_tmp);
+                    c0_skip = ptr;
+                    *ptr++ = b_cc(ARM_CC_CC, 0);
+
+                    *ptr++ = movw_immed_u16(cmp_tmp, 0x0000);
+                    *ptr++ = movt_immed_u16(cmp_tmp, 0x00c8);
+                    *ptr++ = cmp_reg(addr_reg, cmp_tmp);
+                    c0_match = ptr;
+                    *ptr++ = b_cc(ARM_CC_CC, 0);
+                    c0_after = ptr;
+
+                    direct_restore = ptr;
+                    *ptr++ = msr(flags_reg, 8);
+                    *ptr++ = pop(scratch_save_mask);
+                    direct_restore_done = ptr;
+                    *ptr++ = b_cc(ARM_CC_AL, 0);
+
+                    direct_entry = ptr;
+                    *ptr++ = tst_immed(addr_reg, 2);
+                    direct_fast = ptr;
+                    *ptr++ = b_cc(ARM_CC_EQ, 0);
+                    *ptr++ = ldrh_offset(addr_reg, reg, 0);
+                    *ptr++ = ldrh_offset(addr_reg, low_reg, 2);
+                    *ptr++ = lsl_immed(reg, reg, 16);
+                    *ptr++ = orr_reg(reg, reg, low_reg, 0);
+                    direct_done = ptr;
+                    *ptr++ = b_cc(ARM_CC_AL, 0);
+                    direct_fast_target = ptr;
+                    *ptr++ = ldr_offset(addr_reg, reg, 0);
+                    direct_fast_done = ptr;
+                    *ptr++ = b_cc(ARM_CC_AL, 0);
+
+                    call_start = ptr;
+                    *ptr++ = push(call_save_mask);
+                    if (addr_reg != 0)
+                        *ptr++ = mov_reg(0, addr_reg);
+                    *ptr++ = mov_immed_u8(1, size);
+                    *ptr++ = ldr_offset(15, 12, 8);
+                    *ptr++ = blx_cc_reg(ARM_CC_AL, 12);
+                    *ptr++ = pop(call_save_mask);
+                    if (reg != 0)
+                        *ptr++ = mov_reg(reg, 0);
+                    skip_literal = ptr;
+                    *ptr++ = b_cc(ARM_CC_AL, 0);
+                    *ptr++ = BE32((uint32_t)(uintptr_t)&pistorm_handle_special_read_trampoline);
+                    restore_start = ptr;
+                    *ptr++ = msr(flags_reg, 8);
+                    *ptr++ = pop(scratch_save_mask);
+                    helper_restore_done = ptr;
+                    *ptr++ = b_cc(ARM_CC_AL, 0);
+
+                    /*
+                     * Low-memory longword reads must go through the PiStorm
+                     * helper so wrapped/headerized ROM boots see the fake
+                     * low-RAM backing rather than the raw physical page-zero
+                     * contents.
+                     */
+                    low_overlay_check = ptr;
+                    *ptr++ = movw_immed_u16(cmp_tmp, (uint32_t)(uintptr_t)&overlay & 0xffffu);
+                    *ptr++ = movt_immed_u16(cmp_tmp, ((uint32_t)(uintptr_t)&overlay >> 16) & 0xffffu);
+                    *ptr++ = ldr_offset(cmp_tmp, cmp_tmp, 0);
+                    *ptr++ = cmp_immed(cmp_tmp, 0);
+                    low_overlay_direct = ptr;
+                    *ptr++ = b_cc(ARM_CC_EQ, 0);
+                    low_overlay_call = ptr;
+                    *ptr++ = b_cc(ARM_CC_AL, 0);
+
+                    *low_match = b_cc(ARM_CC_CC, low_overlay_check - low_match - 2);
+                    *low_overlay_direct = b_cc(ARM_CC_EQ, call_start - low_overlay_direct - 2);
+                    *low_overlay_call = b_cc(ARM_CC_AL, call_start - low_overlay_call - 2);
+                    *slow_skip = b_cc(ARM_CC_CC, slow_after - slow_skip - 2);
+                    *slow_match = b_cc(ARM_CC_CC, call_start - slow_match - 2);
+                    *c0_skip = b_cc(ARM_CC_CC, c0_after - c0_skip - 2);
+                    *c0_match = b_cc(ARM_CC_CC, call_start - c0_match - 2);
+                    *rom_direct = b_cc(ARM_CC_CS, direct_entry - rom_direct - 2);
+                    load_complete = ptr;
+                    *direct_fast = b_cc(ARM_CC_EQ, direct_fast_target - direct_fast - 2);
+                    *direct_done = b_cc(ARM_CC_AL, direct_restore - direct_done - 2);
+                    *direct_fast_done = b_cc(ARM_CC_AL, direct_restore - direct_fast_done - 2);
+                    *direct_restore_done = b_cc(ARM_CC_AL, load_complete - direct_restore_done - 2);
+                    *helper_restore_done = b_cc(ARM_CC_AL, load_complete - helper_restore_done - 2);
+                    *skip_literal = b_cc(ARM_CC_AL, restore_start - skip_literal - 2);
+
+                    RA_FreeARMRegister(&ptr, flags_reg);
+                    RA_FreeARMRegister(&ptr, cmp_tmp);
+                    RA_FreeARMRegister(&ptr, low_reg);
+                }
 #endif
                 break;
             case 2:
@@ -222,6 +1128,28 @@ static inline __attribute__((always_inline)) uint32_t * load_reg_from_addr_offse
                 kprintf("Unknown size opcode\n");
                 break;
             }
+#ifndef __aarch64__
+            if (size == 1 || size == 2 || size == 4)
+            {
+                hook_addr_reg = base;
+                if (offset != 0)
+                {
+                    hook_addr_reg = reg_d16;
+                    if (offset > -4096 && offset < 4096)
+                    {
+                        if (offset > 0)
+                            *ptr++ = add_immed(reg_d16, base, offset);
+                        else
+                            *ptr++ = sub_immed(reg_d16, base, -offset);
+                    }
+                    else
+                    {
+                        *ptr++ = add_reg(reg_d16, base, reg_d16, 0);
+                    }
+                }
+                ptr = emit_special_load_hook(ptr, size, hook_addr_reg, reg);
+            }
+#endif
             RA_FreeARMRegister(&ptr, reg_d16);
 
     if (free_base)
@@ -246,7 +1174,23 @@ static inline __attribute__((always_inline)) uint32_t * load_reg_from_addr(uint3
         switch (size)
         {
             case 4:
+#ifdef __aarch64__
                 *ptr++ = ldr_offset(base, reg, 0);
+#else
+                {
+                    uint8_t low_reg = RA_AllocARMRegister(&ptr);
+
+                    /* A 68k longword only requires even alignment. Match the
+                     * offset-based ARM32 path so direct loads preserve the
+                     * same low-memory/MMIO behavior in real ROM code. */
+                    *ptr++ = ldrh_offset(base, reg, 0);
+                    *ptr++ = ldrh_offset(base, low_reg, 2);
+                    *ptr++ = lsl_immed(reg, reg, 16);
+                    *ptr++ = orr_reg(reg, reg, low_reg, 0);
+
+                    RA_FreeARMRegister(&ptr, low_reg);
+                }
+#endif
                 break;
             case 2:
                 *ptr++ = ldrh_offset(base, reg, 0);
@@ -261,6 +1205,10 @@ static inline __attribute__((always_inline)) uint32_t * load_reg_from_addr(uint3
                 kprintf("Unknown size opcode\n");
                 break;
         }
+#ifndef __aarch64__
+        if (size == 1 || size == 2 || size == 4)
+            ptr = emit_special_load_hook(ptr, size, base, reg);
+#endif
     }
     else
     {
@@ -334,6 +1282,7 @@ static inline __attribute__((always_inline)) uint32_t * load_reg_from_addr(uint3
 static inline __attribute__((always_inline)) uint32_t * store_reg_to_addr_offset(uint32_t *ptr, uint8_t size, uint8_t base, uint8_t reg, int32_t offset, uint8_t offset_32bit)
 {
     uint8_t reg_d16 = RA_AllocARMRegister(&ptr);
+    uint8_t hook_addr_reg = 0xff;
     int free_base = 0;
 
     if (base == 0xff)
@@ -396,10 +1345,64 @@ static inline __attribute__((always_inline)) uint32_t * store_reg_to_addr_offset
                 *ptr++ = str_offset(reg_d16, reg, 0);
             }
 #else
-                if (offset > -4096 && offset < 4096)
-                    *ptr++ = str_offset(base, reg, offset);
-                else
-                    *ptr++ = str_regoffset(base, reg, reg_d16, 0);
+                {
+                    uint8_t addr_reg = reg_d16;
+                    uint8_t high_reg = RA_AllocARMRegister(&ptr);
+                    uint32_t *fast_store = NULL;
+                    uint32_t *store_done = NULL;
+                    uint32_t *fast_store_target = NULL;
+                    uint32_t *fast_store_done = NULL;
+                    uint32_t *store_complete = NULL;
+
+                    if (offset == 0)
+                        *ptr++ = mov_reg(addr_reg, base);
+                    else if (offset > -256 && offset < 256)
+                    {
+                        if (offset > 0)
+                            *ptr++ = add_immed(addr_reg, base, offset);
+                        else
+                            *ptr++ = sub_immed(addr_reg, base, -offset);
+                    }
+                    else
+                    {
+                        *ptr++ = add_reg(addr_reg, base, reg_d16, 0);
+                    }
+
+                    *ptr++ = tst_immed(addr_reg, 2);
+                    fast_store = ptr;
+                    *ptr++ = b_cc(ARM_CC_EQ, 0);
+                    *ptr++ = lsr_immed(high_reg, reg, 16);
+                    *ptr++ = strh_offset(addr_reg, high_reg, 0);
+                    *ptr++ = strh_offset(addr_reg, reg, 2);
+                    store_done = ptr;
+                    *ptr++ = b_cc(ARM_CC_AL, 0);
+                    fast_store_target = ptr;
+                    *ptr++ = str_offset(addr_reg, reg, 0);
+                    fast_store_done = ptr;
+                    *ptr++ = b_cc(ARM_CC_AL, 0);
+                    store_complete = ptr;
+                    *fast_store = b_cc(ARM_CC_EQ, fast_store_target - fast_store - 2);
+                    *store_done = b_cc(ARM_CC_AL, store_complete - store_done - 2);
+                    *fast_store_done = b_cc(ARM_CC_AL, store_complete - fast_store_done - 2);
+
+                    RA_FreeARMRegister(&ptr, high_reg);
+                }
+                hook_addr_reg = (offset == 0) ? base : reg_d16;
+                if (offset != 0)
+                {
+                    if (offset > -256 && offset < 256)
+                    {
+                        if (offset > 0)
+                            *ptr++ = add_immed(reg_d16, base, offset);
+                        else
+                            *ptr++ = sub_immed(reg_d16, base, -offset);
+                    }
+                    else
+                    {
+                        *ptr++ = add_reg(reg_d16, base, reg_d16, 0);
+                    }
+                }
+                ptr = emit_special_store_hook(ptr, size, hook_addr_reg, reg);
 #endif
                 break;
             case 2:
@@ -436,6 +1439,22 @@ static inline __attribute__((always_inline)) uint32_t * store_reg_to_addr_offset
                     *ptr++ = strh_offset(base, reg, offset);
                 else
                     *ptr++ = strh_regoffset(base, reg, reg_d16);
+                hook_addr_reg = (offset == 0) ? base : reg_d16;
+                if (offset != 0)
+                {
+                    if (offset > -4096 && offset < 4096)
+                    {
+                        if (offset > 0)
+                            *ptr++ = add_immed(reg_d16, base, offset);
+                        else
+                            *ptr++ = sub_immed(reg_d16, base, -offset);
+                    }
+                    else
+                    {
+                        *ptr++ = add_reg(reg_d16, base, reg_d16, 0);
+                    }
+                }
+                ptr = emit_special_store_hook(ptr, size, hook_addr_reg, reg);
 #endif
                 break;
             case 1:
@@ -472,6 +1491,23 @@ static inline __attribute__((always_inline)) uint32_t * store_reg_to_addr_offset
                     *ptr++ = strb_offset(base, reg, offset);
                 else
                     *ptr++ = strb_regoffset(base, reg, reg_d16, 0);
+
+                hook_addr_reg = (offset == 0) ? base : reg_d16;
+                if (offset != 0)
+                {
+                    if (offset > -4096 && offset < 4096)
+                    {
+                        if (offset > 0)
+                            *ptr++ = add_immed(reg_d16, base, offset);
+                        else
+                            *ptr++ = sub_immed(reg_d16, base, -offset);
+                    }
+                    else
+                    {
+                        *ptr++ = add_reg(reg_d16, base, reg_d16, 0);
+                    }
+                }
+                ptr = emit_special_store_hook(ptr, size, hook_addr_reg, reg);
 #endif
                 break;
             case 0:
@@ -538,13 +1574,34 @@ static inline __attribute__((always_inline)) uint32_t * store_reg_to_addr(uint32
         switch (size)
         {
             case 4:
+#ifdef __aarch64__
                 *ptr++ = str_offset(base, reg, 0);
+#else
+                {
+                    uint8_t high_reg = RA_AllocARMRegister(&ptr);
+
+                    /* Match the paired-halfword offset path for direct 68k
+                     * longword stores on ARM32. */
+                    *ptr++ = lsr_immed(high_reg, reg, 16);
+                    *ptr++ = strh_offset(base, high_reg, 0);
+                    *ptr++ = strh_offset(base, reg, 2);
+
+                    RA_FreeARMRegister(&ptr, high_reg);
+                }
+                ptr = emit_special_store_hook(ptr, size, base, reg);
+#endif
                 break;
             case 2:
                 *ptr++ = strh_offset(base, reg, 0);
+#ifndef __aarch64__
+                ptr = emit_special_store_hook(ptr, size, base, reg);
+#endif
                 break;
             case 1:
                 *ptr++ = strb_offset(base, reg, 0);
+#ifndef __aarch64__
+                ptr = emit_special_store_hook(ptr, size, base, reg);
+#endif
                 break;
             case 0:
                 *ptr++ = mov_reg(reg, base);
@@ -585,6 +1642,14 @@ static inline __attribute__((always_inline)) uint32_t * store_reg_to_addr(uint32
         {
             case 4:
                 *ptr++ = str_regoffset(base, reg, index, shift);
+#ifndef __aarch64__
+                {
+                    uint8_t hook_addr_reg = RA_AllocARMRegister(&ptr);
+                    *ptr++ = add_reg(hook_addr_reg, base, index, shift);
+                    ptr = emit_special_store_hook(ptr, size, hook_addr_reg, reg);
+                    RA_FreeARMRegister(&ptr, hook_addr_reg);
+                }
+#endif
                 break;
             case 2:
                 {
@@ -602,10 +1667,27 @@ static inline __attribute__((always_inline)) uint32_t * store_reg_to_addr(uint32
 
                     if (tmp2 != 0xff)
                         RA_FreeARMRegister(&ptr, tmp2);
+
+#ifndef __aarch64__
+                    {
+                        uint8_t hook_addr_reg = RA_AllocARMRegister(&ptr);
+                        *ptr++ = add_reg(hook_addr_reg, base, index, shift);
+                        ptr = emit_special_store_hook(ptr, size, hook_addr_reg, reg);
+                        RA_FreeARMRegister(&ptr, hook_addr_reg);
+                    }
+#endif
                 }
                 break;
             case 1:
                 *ptr++ = strb_regoffset(base, reg, index, shift);
+#ifndef __aarch64__
+                {
+                    uint8_t hook_addr_reg = RA_AllocARMRegister(&ptr);
+                    *ptr++ = add_reg(hook_addr_reg, base, index, shift);
+                    ptr = emit_special_store_hook(ptr, size, hook_addr_reg, reg);
+                    RA_FreeARMRegister(&ptr, hook_addr_reg);
+                }
+#endif
                 break;
             case 0:
                 *ptr++ = add_reg(reg, base, index, shift);
@@ -739,7 +1821,21 @@ uint32_t *EMIT_LoadFromEffectiveAddress(uint32_t *ptr, uint8_t size, uint8_t *ar
                 switch (size)
                 {
                     case 4:
+#ifdef __aarch64__
                         *ptr++ = ldr_offset(reg_An, *arm_reg, 0);
+#else
+                        if (reg_An == *arm_reg)
+                        {
+                            uint8_t addr_reg = RA_AllocARMRegister(&ptr);
+                            *ptr++ = mov_reg(addr_reg, reg_An);
+                            ptr = load_reg_from_addr_offset(ptr, size, addr_reg, *arm_reg, 0, 0);
+                            RA_FreeARMRegister(&ptr, addr_reg);
+                        }
+                        else
+                        {
+                            ptr = load_reg_from_addr_offset(ptr, size, reg_An, *arm_reg, 0, 0);
+                        }
+#endif
                         break;
                     case 2:
                         *ptr++ = ldrh_offset(reg_An, *arm_reg, 0);
@@ -751,6 +1847,10 @@ uint32_t *EMIT_LoadFromEffectiveAddress(uint32_t *ptr, uint8_t size, uint8_t *ar
                         kprintf("Unknown size opcode\n");
                         break;
                 }
+#ifndef __aarch64__
+                if (size == 1 || size == 2)
+                    ptr = emit_special_load_hook(ptr, size, reg_An, *arm_reg);
+#endif
             }
         }
         else if (mode == 3) /* Mode 003: (An)+ */
@@ -767,14 +1867,32 @@ uint32_t *EMIT_LoadFromEffectiveAddress(uint32_t *ptr, uint8_t size, uint8_t *ar
 
                 /* Rare case where source and dest are the same register and size == 4 */
                 if (size == 4 && reg_An == *arm_reg) {
+#ifdef __aarch64__
                     *ptr++ = ldr_offset(reg_An, *arm_reg, 0);
+#else
+                    uint8_t addr_reg = RA_AllocARMRegister(&ptr);
+                    *ptr++ = mov_reg(addr_reg, reg_An);
+                    *ptr++ = add_immed(reg_An, reg_An, 4);
+                    ptr = load_reg_from_addr_offset(ptr, size, addr_reg, *arm_reg, 0, 0);
+                    RA_FreeARMRegister(&ptr, addr_reg);
+#endif
                 }
                 else
                 {
                     switch (size)
                     {
                         case 4:
+#ifdef __aarch64__
                             *ptr++ = ldr_offset_postindex(reg_An, *arm_reg, 4);
+#else
+                        {
+                            uint8_t addr_reg = RA_AllocARMRegister(&ptr);
+                            *ptr++ = mov_reg(addr_reg, reg_An);
+                            *ptr++ = add_immed(reg_An, reg_An, 4);
+                            ptr = load_reg_from_addr_offset(ptr, size, addr_reg, *arm_reg, 0, 0);
+                            RA_FreeARMRegister(&ptr, addr_reg);
+                        }
+#endif
                             break;
                         case 2:
                             *ptr++ = ldrh_offset_postindex(reg_An, *arm_reg, 2);
@@ -789,6 +1907,15 @@ uint32_t *EMIT_LoadFromEffectiveAddress(uint32_t *ptr, uint8_t size, uint8_t *ar
                             kprintf("Unknown size opcode\n");
                             break;
                     }
+#ifndef __aarch64__
+                    if (size == 1 || size == 2)
+                    {
+                        uint8_t hook_addr_reg = RA_AllocARMRegister(&ptr);
+                        *ptr++ = sub_immed(hook_addr_reg, reg_An, size == 4 ? 4 : (size == 2 ? 2 : (src_reg == 7 ? 2 : 1)));
+                        ptr = emit_special_load_hook(ptr, size, hook_addr_reg, *arm_reg);
+                        RA_FreeARMRegister(&ptr, hook_addr_reg);
+                    }
+#endif
                 }
             }
         }
@@ -808,7 +1935,11 @@ uint32_t *EMIT_LoadFromEffectiveAddress(uint32_t *ptr, uint8_t size, uint8_t *ar
 #ifdef __aarch64__
                     *ptr++ = ldur_offset(reg_An, *arm_reg, -4);
 #else
-                    *ptr++ = ldr_offset(reg_An, *arm_reg, -4);
+                    uint8_t addr_reg = RA_AllocARMRegister(&ptr);
+                    *ptr++ = sub_immed(addr_reg, reg_An, 4);
+                    *ptr++ = mov_reg(reg_An, addr_reg);
+                    ptr = load_reg_from_addr_offset(ptr, size, addr_reg, *arm_reg, 0, 0);
+                    RA_FreeARMRegister(&ptr, addr_reg);
 #endif
                 }
                 else
@@ -816,7 +1947,17 @@ uint32_t *EMIT_LoadFromEffectiveAddress(uint32_t *ptr, uint8_t size, uint8_t *ar
                     switch (size)
                     {
                         case 4:
+#ifdef __aarch64__
                             *ptr++ = ldr_offset_preindex(reg_An, *arm_reg, -4);
+#else
+                        {
+                            uint8_t addr_reg = RA_AllocARMRegister(&ptr);
+                            *ptr++ = sub_immed(addr_reg, reg_An, 4);
+                            *ptr++ = mov_reg(reg_An, addr_reg);
+                            ptr = load_reg_from_addr_offset(ptr, size, addr_reg, *arm_reg, 0, 0);
+                            RA_FreeARMRegister(&ptr, addr_reg);
+                        }
+#endif
                             break;
                         case 2:
                             *ptr++ = ldrh_offset_preindex(reg_An, *arm_reg, -2);
@@ -831,6 +1972,10 @@ uint32_t *EMIT_LoadFromEffectiveAddress(uint32_t *ptr, uint8_t size, uint8_t *ar
                             kprintf("Unknown size opcode\n");
                             break;
                     }
+#ifndef __aarch64__
+                    if (size == 1 || size == 2)
+                        ptr = emit_special_load_hook(ptr, size, reg_An, *arm_reg);
+#endif
                 }
             }
         }
@@ -1382,7 +2527,7 @@ uint32_t *EMIT_LoadFromEffectiveAddress(uint32_t *ptr, uint8_t size, uint8_t *ar
                 {
                     uint8_t tmp_reg = RA_AllocARMRegister(&ptr);
                     ptr = load_s16_ext32(ptr, tmp_reg, lo16);
-                    ptr = load_reg_from_addr_offset(ptr, size, tmp_reg, *arm_reg, 0, 0);
+                    ptr = load_reg_from_addr(ptr, size, tmp_reg, *arm_reg, 0xff, 0);
                     RA_FreeARMRegister(&ptr, tmp_reg);
                 }
             }
@@ -1437,18 +2582,7 @@ uint32_t *EMIT_LoadFromEffectiveAddress(uint32_t *ptr, uint8_t size, uint8_t *ar
                     if (hi16 != 0 || lo16 & 0x8000)
                         *ptr++ = movt_immed_u16(tmp_reg, hi16);
 #endif
-                    switch (size)
-                    {
-                        case 4:
-                            *ptr++ = ldr_offset(tmp_reg, *arm_reg, 0);
-                            break;
-                        case 2:
-                            *ptr++ = ldrh_offset(tmp_reg, *arm_reg, 0);
-                            break;
-                        case 1:
-                            *ptr++ = ldrb_offset(tmp_reg, *arm_reg, 0);
-                            break;
-                    }
+                    ptr = load_reg_from_addr(ptr, size, tmp_reg, *arm_reg, 0xff, 0);
                     RA_FreeARMRegister(&ptr, tmp_reg);
                 }
             }
@@ -1641,16 +2775,53 @@ uint32_t *EMIT_StoreToEffectiveAddress(uint32_t *ptr, uint8_t size, uint8_t *arm
                 switch (size)
                 {
                 case 4:
+#ifndef __aarch64__
+                    {
+                        uint8_t addr_reg = RA_AllocARMRegister(&ptr);
+                        uint8_t data_reg = *arm_reg;
+
+                        *ptr++ = mov_reg(addr_reg, reg_An);
+                        if (reg_An == *arm_reg)
+                        {
+                            data_reg = RA_AllocARMRegister(&ptr);
+                            *ptr++ = mov_reg(data_reg, *arm_reg);
+                        }
+
+                        *ptr++ = add_immed(reg_An, reg_An, 4);
+                        ptr = store_reg_to_addr_offset(ptr, size, addr_reg, data_reg, 0, 0);
+
+                        if (data_reg != *arm_reg)
+                            RA_FreeARMRegister(&ptr, data_reg);
+                        RA_FreeARMRegister(&ptr, addr_reg);
+                    }
+#else
                     *ptr++ = str_offset_postindex(reg_An, *arm_reg, 4);
+#endif
                     break;
                 case 2:
                     *ptr++ = strh_offset_postindex(reg_An, *arm_reg, 2);
+#ifndef __aarch64__
+                    {
+                        uint8_t hook_addr_reg = RA_AllocARMRegister(&ptr);
+                        *ptr++ = sub_immed(hook_addr_reg, reg_An, 2);
+                        ptr = emit_special_store_hook(ptr, size, hook_addr_reg, *arm_reg);
+                        RA_FreeARMRegister(&ptr, hook_addr_reg);
+                    }
+#endif
                     break;
                 case 1:
                     if (src_reg == 7)
                         *ptr++ = strb_offset_postindex(reg_An, *arm_reg, 2);
                     else
                         *ptr++ = strb_offset_postindex(reg_An, *arm_reg, 1);
+#ifndef __aarch64__
+                    {
+                        uint8_t hook_addr_reg = RA_AllocARMRegister(&ptr);
+                        *ptr++ = sub_immed(hook_addr_reg, reg_An, src_reg == 7 ? 2 : 1);
+                        ptr = emit_special_store_hook(ptr, size, hook_addr_reg, *arm_reg);
+                        RA_FreeARMRegister(&ptr, hook_addr_reg);
+                    }
+#endif
                     break;
                 default:
                     kprintf("Unknown size opcode\n");
@@ -1673,16 +2844,43 @@ uint32_t *EMIT_StoreToEffectiveAddress(uint32_t *ptr, uint8_t size, uint8_t *arm
                 switch (size)
                 {
                 case 4:
+#ifndef __aarch64__
+                    {
+                        uint8_t addr_reg = RA_AllocARMRegister(&ptr);
+                        uint8_t data_reg = *arm_reg;
+
+                        *ptr++ = sub_immed(addr_reg, reg_An, 4);
+                        if (reg_An == *arm_reg)
+                        {
+                            data_reg = RA_AllocARMRegister(&ptr);
+                            *ptr++ = mov_reg(data_reg, *arm_reg);
+                        }
+
+                        *ptr++ = mov_reg(reg_An, addr_reg);
+                        ptr = store_reg_to_addr_offset(ptr, size, addr_reg, data_reg, 0, 0);
+
+                        if (data_reg != *arm_reg)
+                            RA_FreeARMRegister(&ptr, data_reg);
+                        RA_FreeARMRegister(&ptr, addr_reg);
+                    }
+#else
                     *ptr++ = str_offset_preindex(reg_An, *arm_reg, -4);
+#endif
                     break;
                 case 2:
                     *ptr++ = strh_offset_preindex(reg_An, *arm_reg, -2);
+#ifndef __aarch64__
+                    ptr = emit_special_store_hook(ptr, size, reg_An, *arm_reg);
+#endif
                     break;
                 case 1:
                     if (src_reg == 7)
                         *ptr++ = strb_offset_preindex(reg_An, *arm_reg, -2);
                     else
                         *ptr++ = strb_offset_preindex(reg_An, *arm_reg, -1);
+#ifndef __aarch64__
+                    ptr = emit_special_store_hook(ptr, size, reg_An, *arm_reg);
+#endif
                     break;
                 default:
                     kprintf("Unknown size opcode\n");

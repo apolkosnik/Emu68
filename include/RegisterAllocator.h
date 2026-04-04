@@ -38,6 +38,7 @@ void RA_StoreDirtyM68kRegs(uint32_t **arm_stream);
 
 uint16_t RA_GetChangedMask();
 void RA_ClearChangedMask();
+void RA_ResetAllocator();
 
 uint8_t RA_AllocARMRegister(uint32_t **arm_stream);
 void RA_FreeARMRegister(uint32_t **arm_stream, uint8_t arm_reg);

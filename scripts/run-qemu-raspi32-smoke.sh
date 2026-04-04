@@ -6,11 +6,14 @@ repo_dir="$(cd "${script_dir}/.." && pwd)"
 img="${1:-${repo_dir}/build-arm32/Emu68.img}"
 timeout_secs="${EMU68_QEMU_TIMEOUT:-5}"
 payload_mode="${EMU68_QEMU_PAYLOAD:-return42}"
+custom_initrd="${EMU68_QEMU_INITRD:-}"
 expected_marker="${EMU68_QEMU_EXPECT:-[JIT] Back from translated code}"
 expected_result="${EMU68_QEMU_EXPECT_RESULT:-}"
 expected_extra="${EMU68_QEMU_EXPECT_EXTRA:-}"
 expected_post="${EMU68_QEMU_EXPECT_POST:-}"
 bootargs="${EMU68_QEMU_BOOTARGS:-console=ttyAMA0 skip_reloc}"
+qemu_display="${EMU68_QEMU_DISPLAY:-none}"
+live_serial="${EMU68_QEMU_LIVE_SERIAL:-0}"
 
 for tool in qemu-system-arm dtc timeout mktemp; do
     if ! command -v "${tool}" >/dev/null 2>&1; then
@@ -43,6 +46,18 @@ initrd="${tmpdir}/smoke-initrd.hunk"
 bootstub_elf="${tmpdir}/bootstub.elf"
 bootstub_bin="${tmpdir}/bootstub.bin"
 qemu_log="${tmpdir}/qemu.log"
+if [ -n "${custom_initrd}" ]; then
+    if [ ! -f "${custom_initrd}" ]; then
+        echo "missing initrd: ${custom_initrd}" >&2
+        exit 1
+    fi
+
+    cp "${custom_initrd}" "${initrd}"
+
+    if [ -z "${expected_result}" ]; then
+        expected_result="${expected_marker}"
+    fi
+else
 case "${payload_mode}" in
     return42)
         if [ -z "${expected_result}" ]; then
@@ -1160,6 +1175,37 @@ case "${payload_mode}" in
             '\x00\x00\x03\xf3\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00' \
             '\x00\x00\x00\x00\x00\x00\x00\x03\x00\x00\x03\xe9\x00\x00\x00\x03' \
             '\x70\x04\x44\xc0\x57\xc1\x42\xc0\x4e\x75\x00\x00' \
+            '\x00\x00\x03\xf2' > "${initrd}"
+        ;;
+    dmaconr7ff)
+        if [ -z "${expected_result}" ]; then
+            expected_result='D0 = 0x000007ff'
+        fi
+        printf '%b' \
+            '\x00\x00\x03\xf3\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00' \
+            '\x00\x00\x00\x00\x00\x00\x00\x04\x00\x00\x03\xe9\x00\x00\x00\x04' \
+            '\x33\xfc\x87\xff\x00\xdf\xf0\x96\x30\x39\x00\xdf\xf0\x02\x4e\x75' \
+            '\x00\x00\x03\xf2' > "${initrd}"
+        ;;
+    adkconr1234)
+        if [ -z "${expected_result}" ]; then
+            expected_result='D0 = 0x00001234'
+        fi
+        printf '%b' \
+            '\x00\x00\x03\xf3\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00' \
+            '\x00\x00\x00\x00\x00\x00\x00\x04\x00\x00\x03\xe9\x00\x00\x00\x04' \
+            '\x33\xfc\x92\x34\x00\xdf\xf0\x9e\x30\x39\x00\xdf\xf0\x10\x4e\x75' \
+            '\x00\x00\x03\xf2' > "${initrd}"
+        ;;
+    ciadf0swap)
+        if [ -z "${expected_result}" ]; then
+            expected_result='D0 = 0x000000df'
+        fi
+        printf '%b' \
+            '\x00\x00\x03\xf3\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00' \
+            '\x00\x00\x00\x00\x00\x00\x00\x06\x00\x00\x03\xe9\x00\x00\x00\x06' \
+            '\x70\x00\x13\xfc\x00\x80\x00\xbf\xd1\x00\x10\x39\x00\xbf\xe0\x01' \
+            '\x4e\x72\x20\x00\x4e\x75\x00\x00' \
             '\x00\x00\x03\xf2' > "${initrd}"
         ;;
     orib5a)
@@ -7887,6 +7933,7 @@ case "${payload_mode}" in
         exit 1
         ;;
 esac
+fi
 
 initrd_size="$(wc -c < "${initrd}")"
 initrd_end="$(printf '0x%08x' $((0x01800000 + initrd_size)))"
@@ -7908,23 +7955,33 @@ arm-none-eabi-gcc -nostdlib -march=armv7-a -marm \
     "${script_dir}/qemu-raspi2-arm32-bootstub.S"
 arm-none-eabi-objcopy -O binary "${bootstub_elf}" "${bootstub_bin}"
 
-if timeout "${timeout_secs}s" qemu-system-arm \
-    -M raspi2b \
-    -device "loader,file=${bootstub_bin},addr=0x00001000,force-raw=on" \
-    -device loader,addr=0x00001000,cpu-num=0 \
-    -device "loader,file=${img},addr=0x00008000,force-raw=on" \
-    -device "loader,file=${dtb},addr=0x00400000,force-raw=on" \
-    -device "loader,file=${initrd},addr=0x01800000,force-raw=on" \
-    -display none \
-    -serial stdio \
-    -monitor none > "${qemu_log}" 2>&1
-then
-    rc=0
-else
-    rc=$?
-fi
+qemu_cmd=(
+    timeout "${timeout_secs}s" qemu-system-arm
+    -M raspi2b
+    -device "loader,file=${bootstub_bin},addr=0x00001000,force-raw=on"
+    -device loader,addr=0x00001000,cpu-num=0
+    -device "loader,file=${img},addr=0x00008000,force-raw=on"
+    -device "loader,file=${dtb},addr=0x00400000,force-raw=on"
+    -device "loader,file=${initrd},addr=0x01800000,force-raw=on"
+    -display "${qemu_display}"
+    -serial stdio
+    -monitor none
+)
 
-cat "${qemu_log}"
+if [ "${live_serial}" = "1" ]; then
+    if "${qemu_cmd[@]}" 2>&1 | tee "${qemu_log}"; then
+        rc=0
+    else
+        rc=$?
+    fi
+else
+    if "${qemu_cmd[@]}" > "${qemu_log}" 2>&1; then
+        rc=0
+    else
+        rc=$?
+    fi
+    cat "${qemu_log}"
+fi
 
 post_marker_log="${tmpdir}/post-marker.log"
 awk -v marker="${expected_marker}" '

@@ -224,19 +224,44 @@ uint32_t conditionals_count = 0;
 extern struct M68KState *__m68k_state;
 void M68K_PrintContext(void *);
 
+#ifdef PISTORM
+extern uint32_t pistorm_get_tracepc_start(void);
+extern uint32_t pistorm_get_tracepc_end(void);
+#endif
+
 static inline uintptr_t M68K_Translate(uint16_t *m68kcodeptr)
 {
     uint16_t *orig_m68kcodeptr = m68kcodeptr;
     uintptr_t hash = (uintptr_t)m68kcodeptr;
+    uint32_t var_EMU68_MAX_LOOP_COUNT = (__m68k_state->JIT_CONTROL >> JCCB_LOOP_COUNT) & JCCB_LOOP_COUNT_MASK;
+    uint32_t var_EMU68_M68K_INSN_DEPTH = (__m68k_state->JIT_CONTROL >> JCCB_INSN_DEPTH) & JCCB_INSN_DEPTH_MASK;
     uint32_t *pop_update_loc[EMU68_M68K_INSN_DEPTH];
     uint32_t pop_cnt=0;
+
+    if (var_EMU68_MAX_LOOP_COUNT == 0)
+        var_EMU68_MAX_LOOP_COUNT = JCCB_LOOP_COUNT_MASK + 1;
+    if (var_EMU68_M68K_INSN_DEPTH == 0)
+        var_EMU68_M68K_INSN_DEPTH = JCCB_INSN_DEPTH_MASK + 1;
+
+#ifdef PISTORM
+    if ((uintptr_t)m68kcodeptr >= pistorm_get_tracepc_start() &&
+        (uintptr_t)m68kcodeptr < pistorm_get_tracepc_end())
+    {
+        // Force tiny units inside the traced PC window so real-ROM loops
+        // return to the outer ARM32 run loop on every instruction.
+        var_EMU68_MAX_LOOP_COUNT = 1;
+        var_EMU68_M68K_INSN_DEPTH = 1;
+    }
+#endif
 
     uint16_t *last_rev_jump = (uint16_t *)0xffffffff;
 
     translated_arm_code = temporary_arm_code;
 
-    if (RA_GetTempAllocMask())
+    if (debug && RA_GetTempAllocMask())
         kprintf("[ICache] Temporary register alloc mask on translate start is non-zero %x\n", RA_GetTempAllocMask());
+
+    RA_ResetAllocator();
 
     if (disasm) {
         disasm_open();
@@ -298,7 +323,7 @@ static inline uintptr_t M68K_Translate(uint16_t *m68kcodeptr)
 
     (void)inner_loop;
 
-    while (break_loop == FALSE && soft_break == FALSE && insn_count < Options.M68K_TRANSLATION_DEPTH)
+    while (break_loop == FALSE && soft_break == FALSE && insn_count < var_EMU68_M68K_INSN_DEPTH)
     {
         uint16_t insn_consumed;
         uint16_t *in_code = m68kcodeptr;
@@ -320,7 +345,7 @@ static inline uintptr_t M68K_Translate(uint16_t *m68kcodeptr)
 
             if (found > 0)
             {
-                if ((insn_count - found - 1) > (Options.M68K_TRANSLATION_DEPTH - insn_count))
+                if ((insn_count - found - 1) > (var_EMU68_M68K_INSN_DEPTH - insn_count))
                 {
 //                        kprintf("not enough place for completion of the loop\n");
                     break;
@@ -468,7 +493,7 @@ static inline uintptr_t M68K_Translate(uint16_t *m68kcodeptr)
             }
             else {
                 last_rev_jump = m68kcodeptr;
-                max_rev_jumps = EMU68_MAX_LOOP_COUNT - 1;
+                max_rev_jumps = var_EMU68_MAX_LOOP_COUNT - 1;
             }
         }
 

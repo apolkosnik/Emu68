@@ -162,5 +162,25 @@ uintptr_t mmu_virt2phys(uintptr_t virt_addr)
     return offset;
 }
 
+void mmu_map(uintptr_t phys, uintptr_t virt, uintptr_t length, uint32_t attr_low, uint32_t attr_high)
+{
+    uintptr_t phys_base = phys & ~0x000fffffu;
+    uintptr_t virt_base = virt & ~0x000fffffu;
+    uintptr_t end = (virt + length + 0x000fffffu) & ~0x000fffffu;
+    (void)attr_high;
+
+    while (virt_base < end)
+    {
+        mmu_table[virt_base >> 20] = (phys_base & 0xfff00000u) | (attr_low & 0x000fffffu);
+        phys_base += 0x00100000u;
+        virt_base += 0x00100000u;
+    }
+
+    arm_flush_cache((uintptr_t)mmu_table, sizeof(mmu_table));
+    asm volatile("dsb" ::: "memory");
+    asm volatile("mcr p15,0,%0,c8,c7,0" :: "r"(0) : "memory");
+    asm volatile("dsb\n\tisb" ::: "memory");
+}
+
 __attribute__((used)) void * mmu_table_ptr __attribute__((used, section(".startup @"))) = (void *)((uintptr_t)mmu_table - 0xff800000);
 __attribute__((used)) void * boot_address __attribute__((used, section(".startup @"))) = (void *)((intptr_t)boot);

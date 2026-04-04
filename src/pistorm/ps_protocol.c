@@ -45,6 +45,13 @@ uint32_t CLEAR_BITS = 0;
 
 volatile uint8_t gpio_lock;
 
+#ifndef __aarch64__
+extern void pistorm_update_overlay_state(uint32_t new_overlay);
+extern void pistorm_force_overlay_state(uint32_t new_overlay);
+extern uint32_t pistorm_prepare_protocol_write(uint32_t address, uint32_t value, uint32_t size);
+extern uint32_t pistorm_finalize_protocol_read(uint32_t address, uint32_t value, uint32_t size);
+#endif
+
 static inline uint64_t pistorm_read_cntpct(void)
 {
 #ifdef __aarch64__
@@ -442,6 +449,10 @@ static void ps_write_16_int(unsigned int address, unsigned int data)
 
     address &= 0xffffff;
 
+#ifndef __aarch64__
+    data = pistorm_prepare_protocol_write(address, data, 2);
+#endif
+
     if (address & 1)
     {
         ps_write_8_int(address, data >> 8);
@@ -519,6 +530,10 @@ static void ps_write_8_int(unsigned int address, unsigned int data)
 
     address &= 0xffffff;
 
+#ifndef __aarch64__
+    data = pistorm_prepare_protocol_write(address, data, 1);
+#endif
+
     data = (data & 0xff) | (data << 8);
 
     *(gpio + 0) = LE32(OUTPUT[0]);
@@ -578,6 +593,7 @@ static void ps_write_8_int(unsigned int address, unsigned int data)
     *(gpio + 2) = LE32(INPUT[2]);
 
     while (*(gpio + 13) & LE32((1 << PIN_TXN_IN_PROGRESS))) {}
+
 }
 
 static void ps_write_32_int(unsigned int address, unsigned int value)
@@ -849,7 +865,7 @@ extern struct ExpansionBoard *__boards_start;
 extern int board_idx;
 extern uint32_t overlay;
 #else
-struct ExpansionBoard *__boards_start;
+extern struct ExpansionBoard *__boards_start;
 struct ExpansionBoard **board = &__boards_start;
 int board_idx;
 uint32_t overlay = 1;
@@ -861,7 +877,9 @@ void ps_pulse_reset()
     usleep(30000);
     ps_write_status_reg(STATUS_BIT_RESET);
     
-    overlay = 1;
+#ifndef __aarch64__
+    pistorm_force_overlay_state(1);
+#endif
     board = &__boards_start;
     board_idx = 0;
 }
@@ -1203,6 +1221,9 @@ unsigned int ps_read_8(unsigned int address)
         ticksleep(CHIPSET_DELAY);
     }
 #endif
+#ifndef __aarch64__
+    val = pistorm_finalize_protocol_read(address, (uint32_t)val, 1);
+#endif
     return val;  
 }
 
@@ -1219,6 +1240,9 @@ unsigned int ps_read_16(unsigned int address)
         ticksleep(CHIPSET_DELAY);
     }
 #endif
+#ifndef __aarch64__
+    val = pistorm_finalize_protocol_read(address, (uint32_t)val, 2);
+#endif
     return val;
 }
 
@@ -1234,6 +1258,9 @@ unsigned int ps_read_32(unsigned int address)
     if (address >= 0xa00000) {
         ticksleep(CHIPSET_DELAY);
     }
+#endif
+#ifndef __aarch64__
+    val = pistorm_finalize_protocol_read(address, (uint32_t)val, 4);
 #endif
     return val;
 }
