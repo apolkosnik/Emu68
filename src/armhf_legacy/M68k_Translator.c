@@ -244,11 +244,17 @@ static inline uintptr_t M68K_Translate(uint16_t *m68kcodeptr)
         var_EMU68_M68K_INSN_DEPTH = JCCB_INSN_DEPTH_MASK + 1;
 
 #ifdef PISTORM
+extern uint32_t pistorm_force_tiny_translation_unit(uint32_t pc);
     if ((uintptr_t)m68kcodeptr >= pistorm_get_tracepc_start() &&
         (uintptr_t)m68kcodeptr < pistorm_get_tracepc_end())
     {
         // Force tiny units inside the traced PC window so real-ROM loops
         // return to the outer ARM32 run loop on every instruction.
+        var_EMU68_MAX_LOOP_COUNT = 1;
+        var_EMU68_M68K_INSN_DEPTH = 1;
+    }
+    else if (pistorm_force_tiny_translation_unit((uint32_t)(uintptr_t)m68kcodeptr))
+    {
         var_EMU68_MAX_LOOP_COUNT = 1;
         var_EMU68_M68K_INSN_DEPTH = 1;
     }
@@ -328,6 +334,11 @@ static inline uintptr_t M68K_Translate(uint16_t *m68kcodeptr)
         uint16_t insn_consumed;
         uint16_t *in_code = m68kcodeptr;
         uint32_t *out_code = end;
+
+#ifdef PISTORM
+        if (insn_count && pistorm_force_tiny_translation_unit((uint32_t)(uintptr_t)m68kcodeptr))
+            break;
+#endif
 
         if (insn_count && ((uintptr_t)m68kcodeptr < (uintptr_t)local_state[insn_count-1].mls_M68kPtr))
         {

@@ -390,6 +390,8 @@ uint32_t *EMIT_FlushPC(uint32_t *ptr);
 uint32_t *EMIT_ResetOffsetPC(uint32_t *ptr);
 uint32_t *EMIT_LoadFromEffectiveAddress(uint32_t *ptr, uint8_t size, uint8_t *arm_reg, uint8_t ea, uint16_t *m68k_ptr, uint8_t *ext_words, uint8_t read_only, int32_t *imm_offset);
 uint32_t *EMIT_StoreToEffectiveAddress(uint32_t *ptr, uint8_t size, uint8_t *arm_reg, uint8_t ea, uint16_t *m68k_ptr, uint8_t *ext_words, int sign_extend);
+uint32_t *EMIT_HookSpecialLoad(uint32_t *ptr, uint8_t size, uint8_t addr_reg, uint8_t value_reg);
+uint32_t *EMIT_HookSpecialStore(uint32_t *ptr, uint8_t size, uint8_t addr_reg, uint8_t value_reg);
 uint32_t *EMIT_Exception(uint32_t *ptr, uint16_t exception, uint8_t format, ...);
 uint32_t *EMIT_LocalExit(uint32_t *ptr, uint32_t insn_count_fixup);
 uint32_t *EMIT_JumpOnCondition(uint32_t *ptr, uint8_t m68k_condition, uint32_t distance);

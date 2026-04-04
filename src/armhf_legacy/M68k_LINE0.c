@@ -11,6 +11,52 @@
 #include "M68k.h"
 #include "RegisterAllocator.h"
 
+static inline uint32_t line0_rmw_postinc_bytes(uint16_t opcode, uint8_t size)
+{
+    if (size == 4)
+        return 4;
+    if (size == 2)
+        return 2;
+    return (opcode & 7) == 7 ? 2u : 1u;
+}
+
+static inline uint32_t *line0_emit_rmw_special_load(uint32_t *ptr, uint8_t size, uint8_t addr_reg, uint8_t value_reg)
+{
+#ifndef __aarch64__
+    return EMIT_HookSpecialLoad(ptr, size, addr_reg, value_reg);
+#else
+    (void)size;
+    (void)addr_reg;
+    (void)value_reg;
+    return ptr;
+#endif
+}
+
+static inline uint32_t *line0_emit_rmw_special_store(uint32_t *ptr, uint16_t opcode, uint8_t size, uint8_t mode, uint8_t addr_reg, uint8_t value_reg)
+{
+#ifndef __aarch64__
+    if (mode == 3)
+    {
+        uint8_t hook_addr_reg = RA_AllocARMRegister(&ptr);
+        uint32_t postinc = line0_rmw_postinc_bytes(opcode, size);
+
+        *ptr++ = sub_immed(hook_addr_reg, addr_reg, postinc);
+        ptr = EMIT_HookSpecialStore(ptr, size, hook_addr_reg, value_reg);
+        RA_FreeARMRegister(&ptr, hook_addr_reg);
+        return ptr;
+    }
+
+    return EMIT_HookSpecialStore(ptr, size, addr_reg, value_reg);
+#else
+    (void)opcode;
+    (void)size;
+    (void)mode;
+    (void)addr_reg;
+    (void)value_reg;
+    return ptr;
+#endif
+}
+
 uint32_t *EMIT_CMPI(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
 {
     uint8_t update_mask = M68K_GetSRMask(*m68k_ptr - 1);
@@ -554,6 +600,7 @@ uint32_t *EMIT_ADDI(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
                 }
                 else
                     *ptr++ = ldr_offset(dest, tmp, 0);
+                ptr = line0_emit_rmw_special_load(ptr, size, dest, tmp);
 
                 /* Perform calcualtion */
 #ifdef __aarch64__
@@ -890,6 +937,7 @@ uint32_t *EMIT_ORI(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
                 }
                 else
                     *ptr++ = ldr_offset(dest, tmp, 0);
+                ptr = line0_emit_rmw_special_load(ptr, size, dest, tmp);
 
                 /* Perform calcualtion */
 #ifdef __aarch64__
@@ -910,6 +958,7 @@ uint32_t *EMIT_ORI(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
                 }
                 else
                     *ptr++ = str_offset(dest, tmp, 0);
+                ptr = line0_emit_rmw_special_store(ptr, opcode, size, mode, dest, tmp);
                 break;
             case 2:
                 if (mode == 4)
@@ -919,6 +968,7 @@ uint32_t *EMIT_ORI(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
                 }
                 else
                     *ptr++ = ldrh_offset(dest, tmp, 0);
+                ptr = line0_emit_rmw_special_load(ptr, size, dest, tmp);
                 /* Perform calcualtion */
 #ifdef __aarch64__
                 *ptr++ = orr_reg(immed, immed, tmp, LSL, 16);
@@ -938,6 +988,7 @@ uint32_t *EMIT_ORI(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
                 }
                 else
                     *ptr++ = strh_offset(dest, tmp, 0);
+                ptr = line0_emit_rmw_special_store(ptr, opcode, size, mode, dest, tmp);
                 break;
             case 1:
                 if (mode == 4)
@@ -947,6 +998,7 @@ uint32_t *EMIT_ORI(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
                 }
                 else
                     *ptr++ = ldrb_offset(dest, tmp, 0);
+                ptr = line0_emit_rmw_special_load(ptr, size, dest, tmp);
                 /* Perform calcualtion */
 #ifdef __aarch64__
                 *ptr++ = orr_reg(immed, immed, tmp, LSL, 24);
@@ -966,6 +1018,7 @@ uint32_t *EMIT_ORI(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
                 }
                 else
                     *ptr++ = strb_offset(dest, tmp, 0);
+                ptr = line0_emit_rmw_special_store(ptr, opcode, size, mode, dest, tmp);
                 break;
         }
 
@@ -1233,6 +1286,7 @@ uint32_t *EMIT_ANDI(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
                 }
                 else
                     *ptr++ = ldr_offset(dest, tmp, 0);
+                ptr = line0_emit_rmw_special_load(ptr, size, dest, tmp);
 
                 /* Perform calcualtion */
 #ifdef __aarch64__
@@ -1251,6 +1305,7 @@ uint32_t *EMIT_ANDI(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
                 }
                 else
                     *ptr++ = str_offset(dest, immed, 0);
+                ptr = line0_emit_rmw_special_store(ptr, opcode, size, mode, dest, immed);
                 break;
             case 2:
                 if (mode == 4)
@@ -1260,6 +1315,7 @@ uint32_t *EMIT_ANDI(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
                 }
                 else
                     *ptr++ = ldrh_offset(dest, tmp, 0);
+                ptr = line0_emit_rmw_special_load(ptr, size, dest, tmp);
                 /* Perform calcualtion */
 #ifdef __aarch64__
                 *ptr++ = ands_reg(immed, immed, tmp, LSL, 16);
@@ -1276,6 +1332,7 @@ uint32_t *EMIT_ANDI(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
                 }
                 else
                     *ptr++ = strh_offset(dest, immed, 0);
+                ptr = line0_emit_rmw_special_store(ptr, opcode, size, mode, dest, immed);
                 break;
             case 1:
                 if (mode == 4)
@@ -1285,6 +1342,7 @@ uint32_t *EMIT_ANDI(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
                 }
                 else
                     *ptr++ = ldrb_offset(dest, tmp, 0);
+                ptr = line0_emit_rmw_special_load(ptr, size, dest, tmp);
                 /* Perform calcualtion */
 #ifdef __aarch64__
                 *ptr++ = ands_reg(immed, immed, tmp, LSL, 24);
@@ -1301,6 +1359,7 @@ uint32_t *EMIT_ANDI(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
                 }
                 else
                     *ptr++ = strb_offset(dest, immed, 0);
+                ptr = line0_emit_rmw_special_store(ptr, opcode, size, mode, dest, immed);
                 break;
         }
 
@@ -1587,6 +1646,7 @@ uint32_t *EMIT_EORI(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
                 }
                 else
                     *ptr++ = str_offset(dest, tmp, 0);
+                ptr = line0_emit_rmw_special_store(ptr, opcode, size, mode, dest, tmp);
                 break;
             case 2:
                 if (mode == 4)
@@ -1596,6 +1656,7 @@ uint32_t *EMIT_EORI(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
                 }
                 else
                     *ptr++ = ldrh_offset(dest, tmp, 0);
+                ptr = line0_emit_rmw_special_load(ptr, size, dest, tmp);
                 /* Perform calcualtion */
 #ifdef __aarch64__
                 *ptr++ = eor_reg(immed, immed, tmp, LSL, 16);
@@ -1615,6 +1676,7 @@ uint32_t *EMIT_EORI(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
                 }
                 else
                     *ptr++ = strh_offset(dest, tmp, 0);
+                ptr = line0_emit_rmw_special_store(ptr, opcode, size, mode, dest, tmp);
                 break;
             case 1:
                 if (mode == 4)
@@ -1624,6 +1686,7 @@ uint32_t *EMIT_EORI(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
                 }
                 else
                     *ptr++ = ldrb_offset(dest, tmp, 0);
+                ptr = line0_emit_rmw_special_load(ptr, size, dest, tmp);
                 /* Perform calcualtion */
 #ifdef __aarch64__
                 *ptr++ = eor_reg(immed, immed, tmp, LSL, 24);
@@ -1643,6 +1706,7 @@ uint32_t *EMIT_EORI(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
                 }
                 else
                     *ptr++ = strb_offset(dest, tmp, 0);
+                ptr = line0_emit_rmw_special_store(ptr, opcode, size, mode, dest, tmp);
                 break;
         }
 

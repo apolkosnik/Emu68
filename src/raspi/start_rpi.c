@@ -9,6 +9,7 @@
 
 #include <stdarg.h>
 #include <stdint.h>
+#include <string.h>
 #include "config.h"
 #include "support.h"
 #include "tlsf.h"
@@ -123,12 +124,15 @@ extern void *tlsf;
 
 static uint32_t pistorm_rom_initial_sp;
 static uint32_t pistorm_rom_initial_pc;
+static int pistorm_rom_exec_entry_boot;
 static int pistorm_diagrom_boot;
 static uint32_t pistorm_page0_saved_desc;
 static uint32_t pistorm_boot_fake_lowram_mb;
 static uint32_t pistorm_fake_lowram_mb;
 static uintptr_t pistorm_fake_lowram_virt;
 static uintptr_t pistorm_fake_lowram_phys;
+static uintptr_t pistorm_fake_slowram_virt;
+static uintptr_t pistorm_fake_slowram_phys;
 static uint16_t pistorm_intena_shadow;
 static uint16_t pistorm_intreq_shadow;
 static uint16_t pistorm_dmacon_shadow;
@@ -137,6 +141,7 @@ static uint32_t pistorm_swap_df0_with_dfx;
 static uint32_t pistorm_spoof_df0_id;
 static uint32_t pistorm_move_slow_to_chip;
 static uint32_t pistorm_block_c0;
+static uint32_t pistorm_zorro_disable;
 static uint32_t pistorm_qemu_model;
 static uint32_t pistorm_qemu_rom_bus_hole;
 static int32_t pistorm_qemu_rom_bus_hole_override = -1;
@@ -174,17 +179,53 @@ static uint8_t pistorm_cia_icr_mask[2];
 static uint8_t pistorm_cia_icr_pending[2];
 static uint8_t pistorm_pc_trace_seen;
 static uint32_t pistorm_recalc_checksum;
-static uint32_t pistorm_allow_fast_headerized_qemu_boot;
+static uint32_t pistorm_allow_fast_rom_qemu_boot;
 static uint32_t pistorm_allow_fast_diagrom_qemu_boot;
 static uint32_t pistorm_diagrom_menu_handoff_ready;
 static uint32_t pistorm_diagrom_menu_mode;
 static uint32_t pistorm_diagrom_menu_reported;
-static uint32_t pistorm_fast_headerized_qemu_boot;
-static uint32_t pistorm_fast_headerized_low0;
-static uint32_t pistorm_fast_headerized_a6;
-static uint32_t pistorm_fast_headerized_residents;
+static uint32_t pistorm_fast_rom_qemu_boot;
+static uint32_t pistorm_fast_rom_preexecbase_boot;
+static uint32_t pistorm_fast_rom_low0;
+static uint32_t pistorm_fast_rom_a6;
+static uint32_t pistorm_fast_rom_saved_a1;
+static uint32_t pistorm_fast_rom_saved_a3;
+static uint32_t pistorm_fast_rom_residents;
+static uint32_t pistorm_fast_rom_lowram_node_finalized;
 static uint32_t pistorm_saved_jit_control;
 static uint32_t pistorm_bootstrap_jit_clamped;
+
+static int pistorm_rom_is_diagrom(const uint8_t *rom_start, uintptr_t image_size)
+{
+    static const char diagrom_sig[] = "$VER: DiagROM";
+    uintptr_t limit = image_size;
+
+    if (limit > 0x20000u)
+        limit = 0x20000u;
+    if (limit < sizeof(diagrom_sig) - 1u)
+        return 0;
+
+    for (uintptr_t off = 0; off + sizeof(diagrom_sig) - 1u <= limit; ++off)
+    {
+        if (memcmp(rom_start + off, diagrom_sig, sizeof(diagrom_sig) - 1u) == 0)
+            return 1;
+    }
+
+    return 0;
+}
+
+static inline uint16_t pistorm_debug_read_be16_unaligned(const volatile uint8_t *p)
+{
+    return ((uint16_t)p[0] << 8) | (uint16_t)p[1];
+}
+
+static inline uint32_t pistorm_debug_read_be32_unaligned(const volatile uint8_t *p)
+{
+    return ((uint32_t)p[0] << 24) |
+           ((uint32_t)p[1] << 16) |
+           ((uint32_t)p[2] << 8) |
+           (uint32_t)p[3];
+}
 
 void pistorm_handle_special_write(uint32_t address, uint32_t value, uint32_t size);
 uint32_t pistorm_handle_special_read(uint32_t address, uint32_t size);
@@ -192,6 +233,48 @@ void pistorm_update_overlay_state(uint32_t new_overlay);
 void pistorm_force_overlay_state(uint32_t new_overlay);
 uint32_t pistorm_prepare_protocol_write(uint32_t address, uint32_t value, uint32_t size);
 uint32_t pistorm_finalize_protocol_read(uint32_t address, uint32_t value, uint32_t size);
+
+static uint32_t pistorm_debug_read_be32_addr(uint32_t addr)
+{
+    if (addr > 0x00ffffffu)
+        return BE32(*(volatile uint32_t *)(uintptr_t)addr);
+
+    return BE32(pistorm_handle_special_read(addr, 4));
+}
+
+static void pistorm_debug_dump_memnode_chain(const char *tag, uint32_t node)
+{
+    kprintf("[PISTORM:MEMLIST] %s first=%08x\n", tag, node);
+
+    for (unsigned i = 0; i < 6; ++i)
+    {
+        uint32_t succ;
+        uint32_t pred;
+        uint32_t lower;
+        uint32_t upper;
+        uint32_t free;
+
+        if (node == 0)
+            break;
+
+        succ = pistorm_debug_read_be32_addr(node + 0x00u);
+        pred = pistorm_debug_read_be32_addr(node + 0x04u);
+        lower = pistorm_debug_read_be32_addr(node + 0x14u);
+        upper = pistorm_debug_read_be32_addr(node + 0x18u);
+        free = pistorm_debug_read_be32_addr(node + 0x1cu);
+
+        kprintf("[PISTORM:MEMLIST]   node[%u]=%08x succ=%08x pred=%08x lower=%08x upper=%08x free=%08x\n",
+                i, node, succ, pred, lower, upper, free);
+
+        if (succ == node)
+        {
+            kprintf("[PISTORM:MEMLIST]   node[%u] self-loop detected\n", i);
+            break;
+        }
+
+        node = succ;
+    }
+}
 
 uint32_t pistorm_get_tracepc_start(void)
 {
@@ -201,6 +284,27 @@ uint32_t pistorm_get_tracepc_start(void)
 uint32_t pistorm_get_tracepc_end(void)
 {
     return pistorm_tracepc_end;
+}
+
+uint32_t pistorm_force_tiny_translation_unit(uint32_t pc)
+{
+    if (!pistorm_fast_rom_qemu_boot)
+        return 0;
+
+    if (pc >= 0x00f81e6cu && pc < 0x00f82020u)
+        return 1;
+
+    switch (pc)
+    {
+        case 0x00f8102cu:
+        case 0x00f81202u:
+        case 0x00f81d60u:
+        case 0x00f803dau:
+        case 0x00f81108u:
+            return 1;
+        default:
+            return 0;
+    }
 }
 
 static inline void pistorm_restore_runtime_jit_control(struct M68KState *ctx, uint32_t pc)
@@ -447,7 +551,7 @@ static uint32_t pistorm_build_resident_list_from_table(uint32_t table_addr, uint
     }
 }
 
-static uint32_t pistorm_fast_headerized_build_residents(const uint8_t *rom_start, uintptr_t image_size, uint32_t *out_count)
+static uint32_t pistorm_fast_rom_build_residents(const uint8_t *rom_start, uintptr_t image_size, uint32_t *out_count)
 {
     static const struct
     {
@@ -881,21 +985,22 @@ static inline int pistorm_is_qemu_rom_bus_hole(uint32_t far)
 
 static inline int pistorm_is_cia_address(uint32_t far);
 
-static inline int pistorm_decode_qemu_chip_window(uint32_t far, uint32_t *target)
+static inline int pistorm_decode_qemu_slowram_window(uint32_t far, uint32_t *target)
 {
     uint32_t custom_target;
 
     /*
      * Under QEMU there is no Amiga motherboard or PiStorm bus behind the
-     * broad Cx/Dx probe window. Headerized Kickstart images use that window
-     * during early chip-memory sizing, and collapsing it onto DFFxxx custom
-     * mirrors makes the probe conclude there is no usable memory.
+     * broad Cx/Dx probe window. ROM exec-entry images use that window
+     * during early memory sizing, and collapsing it onto DFFxxx custom
+     * mirrors makes the probe conclude there is no usable RAM.
      *
-     * Alias the non-DFF custom-mirror portion of that window onto the fake
-     * low-RAM backing instead so those probes see deterministic RAM-like
-     * storage while real DFFxxx accesses still hit the custom-register path.
+     * Model that window as separate synthetic slow RAM, not as an alias of
+     * low memory at address 0. That keeps 0x00c00000 behaving like trapdoor
+     * / slow RAM under QEMU instead of collapsing onto the fake low-RAM
+     * backing used for 0x00000000-based bootstrap cells.
      */
-    if (!pistorm_qemu_model || pistorm_fake_lowram_virt == 0 || target == NULL)
+    if (!pistorm_qemu_model || pistorm_fake_slowram_virt == 0 || target == NULL)
         return 0;
 
     if (far < 0x00c00000u || far >= 0x00e00000u)
@@ -912,13 +1017,19 @@ static inline int pistorm_decode_qemu_chip_window(uint32_t far, uint32_t *target
         pistorm_decode_custom_target(far, &custom_target))
         return 0;
 
-    *target = (uint32_t)(pistorm_fake_lowram_virt + (far - 0x00c00000u));
+    *target = (uint32_t)(pistorm_fake_slowram_virt + (far - 0x00c00000u));
     return 1;
 }
 
 static inline int pistorm_decode_cia_register(uint32_t far, uint8_t *chip, uint8_t *reg)
 {
-    if (far >= 0x00bfa001 && far < 0x00bfb000 && (far & 1u))
+    /*
+     * Real Amiga CIA registers are visible through mirrored byte lanes in the
+     * broad BFA/BFD/BFE windows. Under the ARM32 local QEMU path there is no
+     * external bus model to normalize those mirrors for us, so accept both the
+     * odd-addressed canonical form and the even-addressed mirror form here.
+     */
+    if (far >= 0x00bfa000 && far < 0x00bfb000)
     {
         *chip = 1;
         *reg = (far >> 8) & 0x0fu;
@@ -932,7 +1043,7 @@ static inline int pistorm_decode_cia_register(uint32_t far, uint8_t *chip, uint8
         return 1;
     }
 
-    if (far >= 0x00bfe001 && far < 0x00bff000 && (far & 1u))
+    if (far >= 0x00bfe000 && far < 0x00bff000)
     {
         *chip = 0;
         *reg = (far >> 8) & 0x0fu;
@@ -968,6 +1079,12 @@ static inline int pistorm_handle_zorro_read(uint32_t far, uint32_t size, uint32_
     if (size != 1 || far < 0x00e80000u || far > 0x00e8ffffu)
         return 0;
 
+    if (pistorm_zorro_disable)
+    {
+        *value = 0xffu;
+        return 1;
+    }
+
     current = pistorm_current_board();
     if (current == NULL)
     {
@@ -981,9 +1098,16 @@ static inline int pistorm_handle_zorro_read(uint32_t far, uint32_t size, uint32_
 
 static inline int pistorm_handle_zorro_write(uint32_t far, uint32_t value)
 {
-    struct ExpansionBoard *current = pistorm_current_board();
+    struct ExpansionBoard *current;
 
-    if (far < 0x00e80000u || far > 0x00e8ffffu || current == NULL)
+    if (far < 0x00e80000u || far > 0x00e8ffffu)
+        return 0;
+
+    if (pistorm_zorro_disable)
+        return 1;
+
+    current = pistorm_current_board();
+    if (current == NULL)
         return 0;
 
     if (current->is_z3)
@@ -1067,6 +1191,26 @@ static inline void pistorm_raw_write(uint32_t address, uint32_t value, uint32_t 
             break;
         default:
             break;
+    }
+}
+
+static inline int pistorm_is_unmapped_high_address(uint32_t far)
+{
+    return far >= 0x01000000u;
+}
+
+static inline uint32_t pistorm_read_unmapped_high_address(uint32_t far, uint32_t size)
+{
+    (void)far;
+
+    switch (size)
+    {
+        case 1:
+            return 0xbau;
+        case 2:
+            return 0xbad0u;
+        default:
+            return 0xbad00badu;
     }
 }
 
@@ -1308,8 +1452,12 @@ void pistorm_force_overlay_state(uint32_t new_overlay)
 static void pistorm_init_fake_lowram(void)
 {
     uintptr_t size_bytes;
+    uintptr_t slowram_size_bytes;
+    uintptr_t total_bytes;
     uintptr_t virt_base;
     uintptr_t phys_base;
+    uintptr_t slowram_virt;
+    uintptr_t slowram_phys;
     uint32_t desc_attrs;
 
     if (pistorm_fake_lowram_mb == 0)
@@ -1322,11 +1470,15 @@ static void pistorm_init_fake_lowram(void)
         pistorm_fake_lowram_mb = 8;
 
     size_bytes = (uintptr_t)pistorm_fake_lowram_mb << 20;
-    virt_base = ((uintptr_t)top_of_ram - 0x02000000u - size_bytes) & ~0x000fffffu;
+    slowram_size_bytes = 0x00200000u;
+    total_bytes = size_bytes + slowram_size_bytes;
+    virt_base = ((uintptr_t)top_of_ram - 0x02000000u - total_bytes) & ~0x000fffffu;
     phys_base = mmu_virt2phys(virt_base) & ~0x000fffffu;
+    slowram_virt = virt_base + size_bytes;
+    slowram_phys = phys_base + size_bytes;
     desc_attrs = mmu_table[0] & 0x000fffffu;
 
-    memset((void *)virt_base, 0, size_bytes);
+    memset((void *)virt_base, 0, total_bytes);
     /*
      * Wrapped ROM images look for a "LOWM" marker in low RAM. The current
      * Kickstart wrapper probes both address 0 and 0x00010000, so seed both
@@ -1335,13 +1487,15 @@ static void pistorm_init_fake_lowram(void)
     *(volatile uint32_t *)virt_base = BE32(0x4c4f574d);
     if (size_bytes > 0x10000u)
         *(volatile uint32_t *)(virt_base + 0x10000u) = BE32(0x4c4f574d);
-    arm_flush_cache(virt_base, size_bytes);
+    arm_flush_cache(virt_base, total_bytes);
 
     for (uint32_t i = 0; i < pistorm_fake_lowram_mb; i++)
         mmu_table[i] = (uint32_t)(phys_base + ((uintptr_t)i << 20)) | desc_attrs;
 
     pistorm_fake_lowram_virt = virt_base;
     pistorm_fake_lowram_phys = phys_base;
+    pistorm_fake_slowram_virt = slowram_virt;
+    pistorm_fake_slowram_phys = slowram_phys;
     pistorm_page0_saved_desc = mmu_table[0];
 
     arm_flush_cache((uintptr_t)mmu_table, sizeof(mmu_table));
@@ -1349,6 +1503,8 @@ static void pistorm_init_fake_lowram(void)
 
     kprintf("[BOOT] ARM32 PiStorm fake low RAM: %d MB @ virt=%08x phys=%08x\n",
         pistorm_fake_lowram_mb, (uint32_t)virt_base, (uint32_t)phys_base);
+    kprintf("[BOOT] ARM32 PiStorm fake slow RAM: %d MB @ virt=%08x phys=%08x\n",
+        (uint32_t)(slowram_size_bytes >> 20), (uint32_t)slowram_virt, (uint32_t)slowram_phys);
     kprintf("[BOOT] ARM32 PiStorm fake low RAM seed low0=%08x\n",
         BE32(*(volatile uint32_t *)virt_base));
 }
@@ -1467,8 +1623,11 @@ static int pistorm_sync_special_write_state(uint32_t far, uint32_t *value_io, ui
 
 uint32_t pistorm_prepare_protocol_write(uint32_t address, uint32_t value, uint32_t size)
 {
-    uint32_t far = address & 0x00ffffffu;
+    uint32_t far = address;
     uint32_t custom_target = 0;
+
+    if (pistorm_is_unmapped_high_address(far))
+        return value;
 
     if (pistorm_decode_custom_target(far, &custom_target))
         far = custom_target;
@@ -1519,16 +1678,19 @@ static uint32_t pistorm_normalize_special_read_value(uint32_t far, uint32_t valu
 
 uint32_t pistorm_finalize_protocol_read(uint32_t address, uint32_t value, uint32_t size)
 {
-    uint32_t far = address & 0x00ffffffu;
+    uint32_t far = address;
     uint32_t custom_target = 0;
-    uint32_t chip_window_target = 0;
+    uint32_t slowram_target = 0;
+
+    if (pistorm_is_unmapped_high_address(far))
+        return pistorm_read_unmapped_high_address(far, size);
 
     if (pistorm_qemu_model)
     {
         if ((overlay && far < 0x00080000u) ||
             (pistorm_fake_lowram_virt != 0 &&
              far < ((uint32_t)pistorm_fake_lowram_mb << 20)) ||
-            pistorm_decode_qemu_chip_window(far, &chip_window_target) ||
+            pistorm_decode_qemu_slowram_window(far, &slowram_target) ||
             pistorm_is_qemu_rom_bus_hole(far) ||
             pistorm_is_custom_address(far) ||
             pistorm_is_cia_address(far) ||
@@ -1546,14 +1708,17 @@ uint32_t pistorm_finalize_protocol_read(uint32_t address, uint32_t value, uint32
 
 uint32_t pistorm_handle_special_read(uint32_t address, uint32_t size)
 {
-    uint32_t far = address & 0x00ffffff;
+    uint32_t far = address;
     uint32_t custom_target = 0;
-    uint32_t chip_window_target = 0;
+    uint32_t slowram_target = 0;
     uint32_t value;
     uint8_t cia_chip;
     uint8_t cia_reg;
     extern uint32_t overlay;
     extern uint32_t last_PC;
+
+    if (pistorm_is_unmapped_high_address(far))
+        return pistorm_read_unmapped_high_address(far, size);
 
     /*
      * Match the AArch64 PiStorm fast-overlay behavior for low-memory reads:
@@ -1563,6 +1728,15 @@ uint32_t pistorm_handle_special_read(uint32_t address, uint32_t size)
     if (overlay && far < 0x00080000)
     {
         value = pistorm_raw_read(0x00f00000u + far, size);
+        pistorm_trace_mmio_access(far, size, value, 0);
+        return value;
+    }
+
+    if (pistorm_move_slow_to_chip &&
+        far >= 0x00080000u && far <= 0x000fffffu &&
+        pistorm_decode_qemu_slowram_window(far + 0x00b80000u, &slowram_target))
+    {
+        value = pistorm_raw_read(slowram_target, size);
         pistorm_trace_mmio_access(far, size, value, 0);
         return value;
     }
@@ -1589,17 +1763,17 @@ uint32_t pistorm_handle_special_read(uint32_t address, uint32_t size)
         return value;
     }
 
-    if (pistorm_decode_qemu_chip_window(far, &chip_window_target))
+    if (pistorm_decode_qemu_slowram_window(far, &slowram_target))
     {
-        value = pistorm_raw_read(chip_window_target, size);
+        value = pistorm_raw_read(slowram_target, size);
         if (pistorm_mmio_trace && far == 0x00c3f01cu && size == 2 && pistorm_chipwin_debug_seen < 8)
         {
             pistorm_chipwin_debug_seen++;
-            kprintf("[PISTORM:CHIPWIN] last=%08x read @ %08x -> %08x target=%08x\n",
+            kprintf("[PISTORM:SLOWWIN] last=%08x read @ %08x -> %08x target=%08x\n",
                 last_PC,
                 far,
                 value,
-                chip_window_target);
+                slowram_target);
         }
         return value;
     }
@@ -1766,9 +1940,20 @@ uint32_t pistorm_handle_special_read(uint32_t address, uint32_t size)
 
 void pistorm_handle_special_write(uint32_t address, uint32_t value, uint32_t size)
 {
-    uint32_t far = address & 0x00ffffff;
+    uint32_t far = address;
     uint32_t custom_target = 0;
-    uint32_t chip_window_target = 0;
+    uint32_t slowram_target = 0;
+
+    if (pistorm_is_unmapped_high_address(far))
+        return;
+
+    if (pistorm_move_slow_to_chip &&
+        far >= 0x00080000u && far <= 0x000fffffu &&
+        pistorm_decode_qemu_slowram_window(far + 0x00b80000u, &slowram_target))
+    {
+        pistorm_raw_write(slowram_target, value, size);
+        return;
+    }
 
     if (pistorm_fake_lowram_virt != 0 &&
         far < ((uint32_t)pistorm_fake_lowram_mb << 20))
@@ -1793,9 +1978,9 @@ void pistorm_handle_special_write(uint32_t address, uint32_t value, uint32_t siz
         return;
     }
 
-    if (pistorm_decode_qemu_chip_window(far, &chip_window_target))
+    if (pistorm_decode_qemu_slowram_window(far, &slowram_target))
     {
-        pistorm_raw_write(chip_window_target, value, size);
+        pistorm_raw_write(slowram_target, value, size);
         return;
     }
 
@@ -1859,27 +2044,406 @@ void pistorm_handle_special_write(uint32_t address, uint32_t value, uint32_t siz
     pistorm_raw_write(far, value, size);
 }
 
-static int pistorm_try_fast_headerized_kick_boot(const uint8_t *rom_start, uintptr_t image_size)
+static void pistorm_fast_rom_seed_slowram_node(void)
+{
+    volatile uint8_t *slowram;
+    uint32_t a0 = 0x00000000u;
+    uint32_t a1 = 0x00f80414u;
+    uint32_t d0 = 0x00200000u - a0;
+    uint32_t aligned_a1;
+    uint32_t high;
+
+    if (pistorm_fake_slowram_virt == 0)
+        return;
+
+    slowram = (volatile uint8_t *)(uintptr_t)pistorm_fake_slowram_virt;
+
+    /*
+     * Seed the first synthetic slow-RAM MemHeader at 0x00c00000. This is
+     * separate from the fake low-RAM backing used for address-0 bootstrap
+     * cells, so ARM32 QEMU no longer aliases slow RAM onto low memory.
+     */
+    *(volatile uint8_t  *)(slowram + a0 + 0x08u) = 0x0au;
+    *(volatile uint8_t  *)(slowram + a0 + 0x09u) = 0xf6u;
+    *(volatile uint32_t *)(slowram + a0 + 0x0au) = BE32(a1);
+    *(volatile uint16_t *)(slowram + a0 + 0x0eu) = BE16(0x0303u);
+
+    aligned_a1 = (a0 + 0x20u + 7u) & ~7u;
+    d0 = ((d0 + ((a0 + 0x20u) - aligned_a1)) & ~7u) - 0x20u;
+    high = aligned_a1 + d0;
+
+    *(volatile uint32_t *)(slowram + a0 + 0x10u) = BE32(aligned_a1);
+    *(volatile uint32_t *)(slowram + a0 + 0x14u) = BE32(aligned_a1);
+    *(volatile uint32_t *)(slowram + a0 + 0x18u) = BE32(high);
+    *(volatile uint32_t *)(slowram + a0 + 0x1cu) = BE32(d0);
+    *(volatile uint32_t *)(slowram + aligned_a1 + 0x00u) = 0;
+    *(volatile uint32_t *)(slowram + aligned_a1 + 0x04u) = BE32(d0);
+}
+
+static void pistorm_fast_rom_finalize_slowram_node(void)
+{
+    if (pistorm_fast_rom_lowram_node_finalized || pistorm_fake_slowram_virt == 0)
+        return;
+    pistorm_fast_rom_lowram_node_finalized = 1;
+}
+
+static inline uint8_t pistorm_fast_rom_read8(uint32_t addr)
+{
+    if (addr > 0x00ffffffu)
+        return *(volatile uint8_t *)(uintptr_t)addr;
+
+    return (uint8_t)(pistorm_handle_special_read(addr, 1) & 0xffu);
+}
+
+static inline uint16_t pistorm_fast_rom_read16(uint32_t addr)
+{
+    if (addr > 0x00ffffffu)
+        return BE16(*(volatile uint16_t *)(uintptr_t)addr);
+
+    return BE16((uint16_t)pistorm_handle_special_read(addr, 2));
+}
+
+static inline uint32_t pistorm_fast_rom_read32(uint32_t addr)
+{
+    if (addr > 0x00ffffffu)
+        return BE32(*(volatile uint32_t *)(uintptr_t)addr);
+
+    return BE32(pistorm_handle_special_read(addr, 4));
+}
+
+static inline void pistorm_fast_rom_write8(uint32_t addr, uint8_t value)
+{
+    if (addr > 0x00ffffffu)
+    {
+        *(volatile uint8_t *)(uintptr_t)addr = value;
+        return;
+    }
+
+    pistorm_handle_special_write(addr, value, 1);
+}
+
+static inline void pistorm_fast_rom_write16(uint32_t addr, uint16_t value)
+{
+    if (addr > 0x00ffffffu)
+    {
+        *(volatile uint16_t *)(uintptr_t)addr = BE16(value);
+        return;
+    }
+
+    pistorm_handle_special_write(addr, value, 2);
+}
+
+static inline void pistorm_fast_rom_write32(uint32_t addr, uint32_t value)
+{
+    if (addr > 0x00ffffffu)
+    {
+        *(volatile uint32_t *)(uintptr_t)addr = BE32(value);
+        return;
+    }
+
+    pistorm_handle_special_write(addr, value, 4);
+}
+
+static int pistorm_fast_rom_expand_stream(struct M68KState *ctx)
+{
+    uint32_t a0 = BE32(ctx->A[0].u32);
+    uint32_t a1 = BE32(ctx->A[1].u32);
+    uint32_t a2 = BE32(ctx->A[2].u32);
+    uint32_t a7 = BE32(ctx->A[7].u32);
+    uint32_t d0 = BE32(ctx->D[0].u32);
+    uint32_t d1 = BE32(ctx->D[1].u32);
+    uint32_t ret;
+    uint32_t clear_words;
+
+    if (a2 == 0 || a7 == 0)
+        return 0;
+
+    /*
+     * Kickstart helper at 0x00f81202:
+     * 1. clear the freshly allocated target region as words
+     * 2. walk a small bytecode stream at A1
+     * 3. expand byte/word/long runs into the destination rooted at A2
+     * 4. RTS
+     */
+    a0 = a2;
+    clear_words = ((uint32_t)(d0 & 0xffffu) >> 1) + 1u;
+    while (clear_words-- != 0)
+    {
+        pistorm_fast_rom_write16(a0, 0);
+        a0 += 2u;
+    }
+
+    a0 = a2;
+
+    for (;;)
+    {
+        uint32_t op;
+        uint32_t mode;
+        uint32_t count;
+
+        d0 &= 0xffff0000u;
+        op = pistorm_fast_rom_read8(a1);
+        a1 += 1u;
+        d0 |= op;
+
+        if (op == 0)
+            break;
+
+        if ((int8_t)op < 0)
+        {
+            uint32_t off;
+
+            if (op & 0x40u)
+            {
+                off = pistorm_fast_rom_read32(a1 - 1u) & 0x00ffffffu;
+                a1 += 3u;
+            }
+            else
+            {
+                off = pistorm_fast_rom_read8(a1);
+                a1 += 1u;
+            }
+
+            a0 = a2 + off;
+        }
+
+        mode = (op >> 3) & 0x0eu;
+        count = op & 0x0fu;
+
+        switch (mode)
+        {
+            case 0x00:
+            case 0x08:
+            {
+                uint32_t iters = count + 1u;
+
+                a1 = (a1 + 1u) & ~1u;
+                while (iters-- != 0)
+                {
+                    uint32_t v = pistorm_fast_rom_read32(a1);
+                    pistorm_fast_rom_write32(a0, v);
+                    a0 += 4u;
+                    a1 += 4u;
+                }
+                break;
+            }
+
+            case 0x02:
+            case 0x0a:
+            {
+                uint32_t iters = count + 1u;
+
+                a1 = (a1 + 1u) & ~1u;
+                while (iters-- != 0)
+                {
+                    uint16_t v = pistorm_fast_rom_read16(a1);
+                    pistorm_fast_rom_write16(a0, v);
+                    a0 += 2u;
+                    a1 += 2u;
+                }
+                break;
+            }
+
+            case 0x04:
+            case 0x0c:
+            {
+                uint32_t iters = count + 1u;
+
+                while (iters-- != 0)
+                {
+                    uint8_t v = pistorm_fast_rom_read8(a1);
+                    pistorm_fast_rom_write8(a0, v);
+                    a0 += 1u;
+                    a1 += 1u;
+                }
+                break;
+            }
+
+            case 0x06:
+            case 0x0e:
+                goto done;
+
+            default:
+                return 0;
+        }
+    }
+
+done:
+    ret = pistorm_fast_rom_read32(a7);
+    ctx->A[0].u32 = BE32(a0);
+    ctx->A[1].u32 = BE32(a1);
+    ctx->D[0].u32 = BE32(d0);
+    ctx->D[1].u32 = BE32(d1);
+    ctx->A[7].u32 = BE32(a7 + 4u);
+    ctx->PC = BE32(ret);
+
+    if (pistorm_mmio_trace || pistorm_step_trace || pistorm_tracepc_end > pistorm_tracepc_start)
+    {
+        kprintf("[BOOT] ARM32 PiStorm fast ROM expander returned pc=%08x a0=%08x a1=%08x a2=%08x d0=%08x\n",
+            ret,
+            a0,
+            a1,
+            a2,
+            d0);
+    }
+
+    return 1;
+}
+
+static void pistorm_fast_rom_alloc_bookkeep(uint32_t a6)
+{
+    uint8_t v127 = pistorm_fast_rom_read8(a6 + 0x127u);
+
+    v127 = (uint8_t)(v127 - 1u);
+    pistorm_fast_rom_write8(a6 + 0x127u, v127);
+    if ((int8_t)v127 >= 0)
+        return;
+
+    if ((int8_t)pistorm_fast_rom_read8(a6 + 0x126u) >= 0)
+        return;
+
+    if ((int16_t)pistorm_fast_rom_read16(a6 + 0x124u) >= 0)
+        return;
+}
+
+static uint32_t pistorm_fast_rom_alloc_from_header(uint32_t header, uint32_t size)
+{
+    uint32_t entry = header + 0x10u;
+    uint32_t alloc_size = (size + 7u) & ~7u;
+
+    for (;;)
+    {
+        uint32_t chunk = pistorm_fast_rom_read32(entry);
+        uint32_t chunk_size;
+
+        if (chunk == 0)
+            return 0;
+
+        chunk_size = pistorm_fast_rom_read32(chunk + 4u);
+        if (alloc_size <= chunk_size)
+        {
+            uint32_t remain = chunk_size - alloc_size;
+
+            if (remain == 0)
+            {
+                pistorm_fast_rom_write32(entry, pistorm_fast_rom_read32(chunk));
+            }
+            else
+            {
+                uint32_t split = chunk + alloc_size;
+
+                pistorm_fast_rom_write32(entry, split);
+                pistorm_fast_rom_write32(split + 0u, pistorm_fast_rom_read32(chunk + 0u));
+                pistorm_fast_rom_write32(split + 4u, remain);
+            }
+
+            pistorm_fast_rom_write32(header + 0x1cu, pistorm_fast_rom_read32(header + 0x1cu) - alloc_size);
+            return chunk;
+        }
+
+        entry = chunk;
+    }
+}
+
+static int pistorm_fast_rom_finish_allocclear(struct M68KState *m68k)
+{
+    uint32_t a0 = BE32(m68k->A[0].u32);
+    uint32_t a6 = BE32(m68k->A[6].u32);
+    uint32_t a7 = BE32(m68k->A[7].u32);
+    uint32_t d1 = BE32(m68k->D[1].u32);
+    uint32_t d2 = BE32(m68k->D[2].u32);
+    uint32_t d3 = BE32(m68k->D[3].u32);
+    uint32_t saved_d2;
+    uint32_t saved_d3;
+    uint32_t ret;
+    uint32_t result = 0;
+    uint16_t sr;
+
+    if (a0 == 0 || a6 == 0)
+        return 0;
+
+    pistorm_fast_rom_finalize_slowram_node();
+
+    while (a0 != 0)
+    {
+        uint32_t flags;
+        uint32_t free_bytes;
+
+        flags = (uint32_t)pistorm_fast_rom_read16(a0 + 0x0eu) & (d2 & 0xffffu);
+        free_bytes = pistorm_fast_rom_read32(a0 + 0x1cu);
+
+        if (flags == (d2 & 0xffffu) && d3 <= free_bytes)
+        {
+            result = pistorm_fast_rom_alloc_from_header(a0, d3);
+            break;
+        }
+
+        a0 = pistorm_fast_rom_read32(a0);
+    }
+
+    pistorm_fast_rom_alloc_bookkeep(a6);
+
+    if (result != 0 && (d2 & (1u << 16)) != 0)
+    {
+        uint32_t clear_addr = result;
+        uint32_t clear_size = (d3 + 7u) & ~7u;
+
+        d1 = 0;
+        while (clear_size != 0)
+        {
+            pistorm_fast_rom_write32(clear_addr, 0);
+            clear_addr += 4u;
+            clear_size -= 4u;
+        }
+
+        m68k->A[0].u32 = BE32(clear_addr);
+    }
+
+    saved_d2 = pistorm_fast_rom_read32(a7 + 0u);
+    saved_d3 = pistorm_fast_rom_read32(a7 + 4u);
+    ret = pistorm_fast_rom_read32(a7 + 8u);
+    kprintf("[PISTORM:FINISHALLOC] a7=%08x s0=%08x s4=%08x s8=%08x result=%08x\n",
+        a7, saved_d2, saved_d3, ret, result);
+
+    m68k->D[0].u32 = BE32(result);
+    m68k->D[1].u32 = BE32(d1);
+    m68k->D[2].u32 = BE32(saved_d2);
+    m68k->D[3].u32 = BE32(saved_d3);
+    sr = BE16(m68k->SR);
+    sr &= (uint16_t)~(SR_N | SR_Z | SR_V | SR_C);
+    if (result == 0)
+        sr |= SR_Z;
+    else if (result & 0x80000000u)
+        sr |= SR_N;
+    m68k->SR = BE16(sr);
+    m68k->A[7].u32 = BE32(a7 + 12u);
+    m68k->PC = BE32(ret);
+    return 1;
+}
+
+static int pistorm_try_fast_rom_exec_kick_boot(const uint8_t *rom_start, uintptr_t image_size)
 {
     uint32_t lowmem_resident;
     volatile uint32_t *lowmem;
-    uint32_t fast_low0;
-    uint32_t fast_a6;
 
-    pistorm_fast_headerized_qemu_boot = 0;
-    pistorm_fast_headerized_low0 = 0;
-    pistorm_fast_headerized_a6 = 0;
-    pistorm_fast_headerized_residents = 0;
+    pistorm_fast_rom_qemu_boot = 0;
+    pistorm_fast_rom_preexecbase_boot = 0;
+    pistorm_fast_rom_low0 = 0;
+    pistorm_fast_rom_a6 = 0;
+    pistorm_fast_rom_saved_a1 = 0;
+    pistorm_fast_rom_saved_a3 = 0;
+    pistorm_fast_rom_residents = 0;
+    pistorm_fast_rom_lowram_node_finalized = 0;
     pistorm_diagrom_menu_handoff_ready = 0;
     pistorm_diagrom_menu_mode = 0;
 
-    if (!pistorm_allow_fast_headerized_qemu_boot ||
+    if (!pistorm_allow_fast_rom_qemu_boot ||
         !pistorm_qemu_model || image_size < 0x250 ||
         pistorm_fake_lowram_mb == 0 || pistorm_fake_lowram_virt == 0)
         return 0;
 
     /*
-     * This matches the wrapped Kickstart 3.2 bootstrap that:
+     * This matches the ROM exec-entry Kickstart 3.2 bootstrap that:
      * 1. checks the ROM checksum
      * 2. fills low exception vectors with 0x00f80492
      * 3. verifies that fill
@@ -1908,20 +2472,12 @@ static int pistorm_try_fast_headerized_kick_boot(const uint8_t *rom_start, uintp
         ((uint32_t)rom_start[0x4a] << 8) |
         (uint32_t)rom_start[0x4b];
 
-    fast_low0 = (uint32_t)(uintptr_t)tlsf_malloc(tlsf, 0x608u);
-    if (fast_low0 == 0)
-        return 0;
-
-    bzero((void *)(uintptr_t)fast_low0, 0x608u);
-    fast_a6 = fast_low0 + 0x38cu;
-
-    *(volatile uint16_t *)(uintptr_t)(fast_a6 + 0x22u) = BE16(0x0073u);
-    *(volatile uint16_t *)(uintptr_t)(fast_a6 + 0x128u) = BE16(0x0017u);
-    *(volatile uint32_t *)(uintptr_t)(fast_a6 + 0x3eu) = BE32(0x00004000u);
+    pistorm_fast_rom_saved_a1 = 0x00004000u;
+    pistorm_fast_rom_saved_a3 = 0x00200000u;
 
     lowmem = (volatile uint32_t *)(uintptr_t)pistorm_fake_lowram_virt;
-    lowmem[0] = BE32(fast_low0);
-    lowmem[1] = BE32(fast_a6);
+    lowmem[0] = BE32(0x4c4f574du);
+    lowmem[1] = 0;
     *(volatile uint32_t *)(uintptr_t)(pistorm_fake_lowram_virt + 0x00010000u) = BE32(0x4c4f574du);
 
     for (uint32_t addr = 0x00000008u; addr <= 0x000000bcu; addr += 4u)
@@ -1940,20 +2496,16 @@ static int pistorm_try_fast_headerized_kick_boot(const uint8_t *rom_start, uintp
     pistorm_handle_special_write(0x00dff110u, 0x0000u, 2);
     pistorm_handle_special_write(0x00dff180u, 0x0111u, 2);
 
-    pistorm_fast_headerized_residents = pistorm_fast_headerized_build_residents(rom_start, image_size, NULL);
-    if (pistorm_fast_headerized_residents != 0)
-        *(volatile uint32_t *)(uintptr_t)(fast_a6 + 0x12cu) = BE32(pistorm_fast_headerized_residents);
-
-    pistorm_fast_headerized_low0 = fast_low0;
-    pistorm_fast_headerized_a6 = fast_a6;
-    pistorm_fast_headerized_qemu_boot = 1;
-    pistorm_rom_initial_pc = 0x00f80382u;
-    kprintf("[BOOT] Fast QEMU headerized Kickstart bootstrap enabled. Reset PC=%08x A6=%08x low0=%08x resident=%08x list=%08x\n",
+    pistorm_fast_rom_residents = pistorm_fast_rom_build_residents(rom_start, image_size, NULL);
+    pistorm_fast_rom_qemu_boot = 1;
+    pistorm_fast_rom_preexecbase_boot = 1;
+    pistorm_rom_initial_pc = 0x00f8030au;
+    kprintf("[BOOT] Fast QEMU ROM bootstrap enabled. Reset PC=%08x A0=%08x A3=%08x resident=%08x list=%08x\n",
         pistorm_rom_initial_pc,
-        pistorm_fast_headerized_a6,
-        pistorm_fast_headerized_low0,
+        pistorm_fast_rom_saved_a1,
+        pistorm_fast_rom_saved_a3,
         lowmem_resident,
-        pistorm_fast_headerized_residents);
+        pistorm_fast_rom_residents);
     return 1;
 }
 
@@ -2242,29 +2794,31 @@ static int load_pistorm_rom_image(void *image_start, uintptr_t image_size)
 
     pistorm_rom_initial_sp = BE32(*(uint32_t *)rom_base);
     pistorm_rom_initial_pc = BE32(*((uint32_t *)rom_base + 1));
+    pistorm_rom_exec_entry_boot = 0;
     pistorm_diagrom_boot = 0;
 
     /*
-     * Some DiagROM images are packaged as an Amiga ROMTag/JMP header rather
-     * than a Kickstart-style reset vector table. Synthesise reset vectors so
-     * the ARM32 runtime can start them like a normal kickstart image.
+     * Some ROM images enter through an Amiga ROMTag/JMP stub rather than a
+     * raw reset vector table. Synthesise reset state so the ARM32 runtime can
+     * start them like the normal ROM path.
      */
     if (rom_start[0] == 0x11 && rom_start[1] == 0x14 && rom_start[2] == 0x4e && rom_start[3] == 0xf9 &&
         pistorm_rom_initial_pc >= 0x00e00000 && pistorm_rom_initial_pc < 0x01000000)
     {
-        pistorm_diagrom_boot = 1;
+        pistorm_rom_exec_entry_boot = 1;
+        pistorm_diagrom_boot = pistorm_rom_is_diagrom(rom_start, image_size);
         pistorm_rom_initial_sp = top_of_ram;
-        kprintf("[BOOT] Headerized ROM entry detected. Reset SP=%08x PC=%08x\n",
+        kprintf("[BOOT] ROM exec-entry image detected. Reset SP=%08x PC=%08x\n",
             pistorm_rom_initial_sp, pistorm_rom_initial_pc);
-        (void)pistorm_try_fast_headerized_kick_boot(rom_start, image_size);
+        (void)pistorm_try_fast_rom_exec_kick_boot(rom_start, image_size);
     }
 
     /*
-     * Wrapped/headerized ROM images jump straight into the ROM body and probe
+     * ROM exec-entry images jump straight into the ROM body and probe
      * low RAM very early, so leave page 0 backed by RAM at entry. Raw
      * Kickstart-style images still need the traditional overlay-on reset view.
      */
-    pistorm_force_overlay_state(pistorm_diagrom_boot ? 0u : 1u);
+    pistorm_force_overlay_state(pistorm_rom_exec_entry_boot ? 0u : 1u);
 
     return 1;
 }
@@ -2375,7 +2929,9 @@ void boot(uintptr_t dummy, uintptr_t arch, uintptr_t atags, uintptr_t dummy2)
             skip_relocation = strstr(p->op_value, "skip_reloc") != NULL;
 #ifdef PISTORM
             pistorm_recalc_checksum = strstr(p->op_value, "checksum_rom") != NULL;
-            pistorm_allow_fast_headerized_qemu_boot = strstr(p->op_value, "fast_headerized") != NULL;
+            pistorm_allow_fast_rom_qemu_boot =
+                strstr(p->op_value, "fast_rom") != NULL ||
+                strstr(p->op_value, "fast_headerized") != NULL;
             if (strstr(p->op_value, "no_bus_hole"))
                 pistorm_qemu_rom_bus_hole_override = 0;
             else if (strstr(p->op_value, "force_bus_hole"))
@@ -2971,14 +3527,14 @@ for (int i=1; i < 2; i++)
     __m68k.JIT_CONTROL |= (emu68_lcnt & JCCB_LOOP_COUNT_MASK) << JCCB_LOOP_COUNT;
 #ifdef PISTORM
     if (addr == NULL &&
-        (pistorm_fast_headerized_qemu_boot ||
+        (pistorm_fast_rom_qemu_boot ||
          (pistorm_diagrom_boot && pistorm_allow_fast_diagrom_qemu_boot)))
     {
         /*
          * The ARM32 QEMU ROM bring-up paths need conservative unit sizing so
          * the runtime returns to the outer loop frequently enough for the
          * targeted bootstrap hooks to fire. This is already required for the
-         * fast headerized Kickstart path, and the fast DiagROM path has the
+         * fast ROM bootstrap path, and the fast DiagROM path has the
          * same constraint once it gets past the early serial / memory probes.
          * These settings stay limited to ROM bootstrap mode and do not affect
          * the normal synthetic HUNK smoke paths.
@@ -3012,26 +3568,34 @@ for (int i=1; i < 2; i++)
         m68k->SR = BE16(SR_S | SR_IPL);
         m68k->FPCR = 0;
 
-        if (pistorm_fast_headerized_qemu_boot)
+        if (pistorm_fast_rom_qemu_boot)
         {
-            m68k->D[0].u32 = BE32(pistorm_fast_headerized_low0);
-            /*
-             * The fast headerized path jumps into 0x00f80382, which normally
-             * is reached from the earlier 0x00f80320 setup block after:
-             *
-             *   move.l  a0, -(a7)
-             *   ...
-             *   movea.l (a7)+, a1
-             *
-             * So A1 at 0x00f80382 must reflect the original entry A0, not the
-             * generic Pi boot argument value. Keeping the old 0x00001000 seed
-             * corrupts the later list/link setup and the ROM eventually falls
-             * back out to PC=0 under the default JIT path.
-             */
-            m68k->A[1].u32 = 0;
-            m68k->A[2].u32 = BE32(0x00000017u);
-            m68k->A[3].u32 = BE32(0x00004000u);
-            m68k->A[6].u32 = BE32(pistorm_fast_headerized_a6);
+            if (pistorm_fast_rom_preexecbase_boot)
+            {
+                uint32_t sp = BE32(m68k->A[7].u32) - 4u;
+
+                m68k->A[0].u32 = BE32(pistorm_fast_rom_saved_a1);
+                m68k->A[3].u32 = BE32(pistorm_fast_rom_saved_a3);
+                m68k->A[7].u32 = BE32(sp);
+                *(volatile uint32_t *)(uintptr_t)sp = 0;
+                kprintf("[BOOT] ARM32 fast ROM entry seeds a0=%08x a3=%08x sp=%08x\n",
+                    pistorm_fast_rom_saved_a1,
+                    pistorm_fast_rom_saved_a3,
+                    sp);
+            }
+            else
+            {
+                m68k->D[0].u32 = BE32(pistorm_fast_rom_low0);
+                m68k->A[1].u32 = BE32(pistorm_fast_rom_saved_a1);
+                m68k->A[2].u32 = BE32(0x00000017u);
+                m68k->A[3].u32 = BE32(pistorm_fast_rom_saved_a3);
+                m68k->A[6].u32 = BE32(pistorm_fast_rom_a6);
+                kprintf("[BOOT] ARM32 fast ROM entry seeds d0=%08x a1=%08x a3=%08x a6=%08x\n",
+                    pistorm_fast_rom_low0,
+                    pistorm_fast_rom_saved_a1,
+                    pistorm_fast_rom_saved_a3,
+                    pistorm_fast_rom_a6);
+            }
         }
 
         pistorm_intena_shadow = 0;
@@ -3049,20 +3613,42 @@ for (int i=1; i < 2; i++)
         pistorm_store_special_word(0x00dff002, 0);
         pistorm_store_special_word(0x00dff010, 0);
         board_idx = 0;
-        pistorm_force_overlay_state(pistorm_diagrom_boot ? 0u : 1u);
+        pistorm_force_overlay_state(pistorm_rom_exec_entry_boot ? 0u : 1u);
         if (pistorm_mmio_trace || pistorm_step_trace)
             kprintf("[BOOT] ARM32 PiStorm forcing OVL %s before ROM JIT entry\n",
                 overlay ? "on" : "off");
         if (pistorm_fake_lowram_mb && pistorm_fake_lowram_virt)
         {
-            if (pistorm_fast_headerized_qemu_boot)
+            if (pistorm_fast_rom_qemu_boot)
             {
-                *(volatile uint32_t *)pistorm_fake_lowram_virt = BE32(pistorm_fast_headerized_low0);
-                *(volatile uint32_t *)(pistorm_fake_lowram_virt + 4u) = BE32(pistorm_fast_headerized_a6);
+                if (pistorm_fast_rom_preexecbase_boot)
+                {
+                    *(volatile uint32_t *)pistorm_fake_lowram_virt = BE32(0x4c4f574du);
+                    *(volatile uint32_t *)(pistorm_fake_lowram_virt + 4u) = 0;
+                }
+                else
+                {
+                    *(volatile uint32_t *)pistorm_fake_lowram_virt = BE32(pistorm_fast_rom_low0);
+                    *(volatile uint32_t *)(pistorm_fake_lowram_virt + 4u) = BE32(pistorm_fast_rom_a6);
+                    pistorm_fast_rom_seed_slowram_node();
+                }
             }
             else
             {
                 *(volatile uint32_t *)pistorm_fake_lowram_virt = BE32(0x4c4f574d);
+                if (pistorm_rom_exec_entry_boot)
+                {
+                    /*
+                     * Generic ROM exec-entry images still expect the early
+                     * low-memory bootstrap cell at 0x00000004 to point at the
+                     * current ROM workspace base before they rebuild their
+                     * own lists. The fast ROM path already seeded this slot;
+                     * do the same for the plain exec-entry path so it does
+                     * not immediately zero A6 via "move.l $4.w,d1 / movea.l
+                     * d1,a6" when fake low RAM is active.
+                     */
+                    *(volatile uint32_t *)(pistorm_fake_lowram_virt + 4u) = m68k->A[6].u32;
+                }
             }
             *(volatile uint32_t *)(pistorm_fake_lowram_virt + 0x10000u) = BE32(0x4c4f574d);
             if (pistorm_mmio_trace || pistorm_step_trace)
@@ -3101,6 +3687,7 @@ for (int i=1; i < 2; i++)
             pistorm_spoof_df0_id = 0;
             pistorm_move_slow_to_chip = 0;
             pistorm_block_c0 = 0;
+            pistorm_zorro_disable = 0;
             pistorm_mmio_trace = 0;
             pistorm_step_trace = 0;
             pistorm_tracepc_start = 0;
@@ -3110,7 +3697,7 @@ for (int i=1; i < 2; i++)
             pistorm_tracepc_last_d1 = 0xffffffffu;
             pistorm_tracepc_last_sr = 0xffffu;
             pistorm_recalc_checksum = 0;
-            pistorm_allow_fast_headerized_qemu_boot = 0;
+            pistorm_allow_fast_rom_qemu_boot = 0;
             pistorm_allow_fast_diagrom_qemu_boot = 0;
             pistorm_diagrom_menu_handoff_ready = 0;
             pistorm_diagrom_menu_mode = 0;
@@ -3152,15 +3739,16 @@ for (int i=1; i < 2; i++)
                 pistorm_move_slow_to_chip = 1;
             if (strstr(prop->op_value, "block_c0"))
                 pistorm_block_c0 = 1;
+            if (strstr(prop->op_value, "z3_disable"))
+                pistorm_zorro_disable = 1;
             if (strstr(prop->op_value, "mmio_trace"))
                 pistorm_mmio_trace = 1;
             if (strstr(prop->op_value, "step_trace"))
                 pistorm_step_trace = 1;
-            if (strstr(prop->op_value, "fast_headerized"))
-                pistorm_allow_fast_headerized_qemu_boot = 1;
+            if (strstr(prop->op_value, "fast_rom") ||
+                strstr(prop->op_value, "fast_headerized"))
+                pistorm_allow_fast_rom_qemu_boot = 1;
             if (strstr(prop->op_value, "fast_diagrom"))
-                pistorm_allow_fast_diagrom_qemu_boot = 1;
-            else if (pistorm_qemu_model && pistorm_diagrom_boot)
                 pistorm_allow_fast_diagrom_qemu_boot = 1;
             if ((tok = find_token(prop->op_value, "tracepc=")))
             {
@@ -3206,14 +3794,16 @@ for (int i=1; i < 2; i++)
                 kprintf("[BOOT] ARM32 PiStorm tracepc=%08x-%08x\n", pistorm_tracepc_start, pistorm_tracepc_end);
             if (pistorm_recalc_checksum)
                 kprintf("[BOOT] ARM32 PiStorm checksum_rom enabled\n");
-            if (pistorm_allow_fast_headerized_qemu_boot)
-                kprintf("[BOOT] ARM32 PiStorm fast headerized ROM bootstrap enabled\n");
+            if (pistorm_allow_fast_rom_qemu_boot)
+                kprintf("[BOOT] ARM32 PiStorm fast ROM bootstrap enabled\n");
             if (pistorm_allow_fast_diagrom_qemu_boot)
                 kprintf("[BOOT] ARM32 PiStorm fast DiagROM bootstrap enabled\n");
             if (pistorm_move_slow_to_chip)
                 kprintf("[BOOT] ARM32 PiStorm move_slow_to_chip enabled\n");
             if (pistorm_block_c0)
                 kprintf("[BOOT] ARM32 PiStorm block_c0 enabled\n");
+            if (pistorm_zorro_disable)
+                kprintf("[BOOT] ARM32 PiStorm z3_disable enabled\n");
             if ((tok = find_token(prop->op_value, "fake_lowram=")))
             {
                 uint32_t val = 0;
@@ -3315,7 +3905,7 @@ for (int i=1; i < 2; i++)
     pistorm_bootstrap_jit_clamped = 0;
 
     if (addr == NULL &&
-        (pistorm_fast_headerized_qemu_boot ||
+        (pistorm_fast_rom_qemu_boot ||
          (pistorm_diagrom_boot && pistorm_allow_fast_diagrom_qemu_boot)))
     {
         __m68k.JIT_CONTROL &= ~((JCCB_INSN_DEPTH_MASK << JCCB_INSN_DEPTH) |
@@ -3850,30 +4440,99 @@ for (int i=1; i < 2; i++)
                 m68k->PC = BE32(0x00f827acu);
             }
 
-            if (pistorm_fast_headerized_qemu_boot &&
-                pistorm_fast_headerized_residents != 0 &&
+            if (pistorm_fast_rom_qemu_boot &&
+                BE32(m68k->PC) == 0x00f81eaau)
+            {
+                uint32_t sp = BE32(m68k->A[7].u32);
+                uint32_t ret = pistorm_fast_rom_read32(sp);
+                uint32_t header = BE32(m68k->A[0].u32);
+                uint32_t size = BE32(m68k->D[0].u32);
+
+                if (header != 0 && size != 0)
+                {
+                    kprintf("[PISTORM:FASTALLOC] pc=%08x ret=%08x header=%08x size=%08x\n",
+                        BE32(m68k->PC), ret, header, size);
+                    uint32_t result = pistorm_fast_rom_alloc_from_header(header, size);
+                    kprintf("[PISTORM:FASTALLOC] result=%08x\n", result);
+
+                    m68k->D[0].u32 = BE32(result);
+                    m68k->A[7].u32 = BE32(sp + 4u);
+                    m68k->PC = BE32(ret);
+                }
+            }
+
+            if (pistorm_fast_rom_qemu_boot &&
+                pistorm_fast_rom_a6 == 0 &&
+                BE32(m68k->PC) >= 0x00f80352u &&
+                BE32(m68k->PC) < 0x00f80384u)
+            {
+                uint32_t execbase = BE32(m68k->A[6].u32);
+
+                if (execbase != 0)
+                {
+                    pistorm_fast_rom_a6 = execbase;
+                    if (execbase >= 0x38cu)
+                        pistorm_fast_rom_low0 = execbase - 0x38cu;
+                }
+            }
+
+            if (pistorm_fast_rom_qemu_boot &&
+                BE32(m68k->PC) == 0x00f81fe0u)
+            {
+                pistorm_fast_rom_finalize_slowram_node();
+                (void)pistorm_fast_rom_finish_allocclear(m68k);
+            }
+
+            if (pistorm_fast_rom_qemu_boot &&
+                pistorm_fast_rom_residents != 0 &&
                 BE32(m68k->PC) == 0x00f803dau)
             {
                 uint32_t execbase = BE32(m68k->A[6].u32);
 
                 m68k->A[0].u32 = BE32(0x00f803f8u);
                 if (execbase != 0)
-                    *(volatile uint32_t *)(uintptr_t)(execbase + 0x12cu) = BE32(pistorm_fast_headerized_residents);
-                *(volatile uint32_t *)(uintptr_t)(pistorm_fast_headerized_a6 + 0x12cu) = BE32(pistorm_fast_headerized_residents);
+                    *(volatile uint32_t *)(uintptr_t)(execbase + 0x12cu) = BE32(pistorm_fast_rom_residents);
+                *(volatile uint32_t *)(uintptr_t)(pistorm_fast_rom_a6 + 0x12cu) = BE32(pistorm_fast_rom_residents);
                 m68k->PC = BE32(0x00f803e6u);
             }
 
-            if (pistorm_fast_headerized_qemu_boot &&
-                pistorm_fast_headerized_residents != 0 &&
+            if (pistorm_fast_rom_qemu_boot &&
+                BE32(m68k->PC) == 0x00f81fe0u)
+            {
+                pistorm_fast_rom_finalize_slowram_node();
+                (void)pistorm_fast_rom_finish_allocclear(m68k);
+            }
+
+            if (pistorm_fast_rom_qemu_boot &&
+                pistorm_fast_rom_residents != 0 &&
                 BE32(m68k->PC) == 0x00f81108u)
             {
-                m68k->A[2].u32 = BE32(pistorm_fast_headerized_residents);
+                m68k->A[2].u32 = BE32(pistorm_fast_rom_residents);
                 m68k->PC = BE32(0x00f8110cu);
+            }
+
+            if (pistorm_fast_rom_qemu_boot &&
+                pistorm_zorro_disable &&
+                BE32(m68k->PC) == 0x00f846bau)
+            {
+                uint32_t a2 = BE32(m68k->A[2].u32);
+                uint32_t a4 = BE32(m68k->A[4].u32);
+
+                /*
+                 * In the fast QEMU ROM path with Zorro boards disabled there
+                 * is no autoconfig device behind 0x00e80000. The wrapped ROM
+                 * enumerator at 0x00f846ba keeps asking Exec for probe
+                 * templates and then validating the same empty bus window,
+                 * which never advances the boot. Match the "no more configs"
+                 * return instead of walking the template loop pointlessly.
+                 */
+                if (a2 == 0x00e80000u && a4 == 0x00e80000u)
+                    m68k->PC = BE32(0x00f8470au);
             }
 
             /*
              * ARM32 currently misloads RomTag rt_Flags / rt_Init fields in the
-             * fast headerized Kickstart resident walk:
+             * fast ROM resident walk:
              *
              *   00f8113c  btst.b  #$7, $a(a1)
              *   00f81126  move.b  $a(a1), d0
@@ -3885,7 +4544,7 @@ for (int i=1; i < 2; i++)
              * PCs so the boot can continue while the underlying translator
              * bug is investigated separately.
              */
-            if (pistorm_fast_headerized_qemu_boot &&
+            if (pistorm_fast_rom_qemu_boot &&
                 BE32(m68k->PC) == 0x00f8113cu)
             {
                 uint32_t a1 = BE32(m68k->A[1].u32);
@@ -3908,7 +4567,7 @@ for (int i=1; i < 2; i++)
                     }
                 }
             }
-            if (pistorm_fast_headerized_qemu_boot &&
+            if (pistorm_fast_rom_qemu_boot &&
                 BE32(m68k->PC) == 0x00f81126u)
             {
                 uint32_t a1 = BE32(m68k->A[1].u32);
@@ -3921,7 +4580,7 @@ for (int i=1; i < 2; i++)
                     m68k->PC = BE32(0x00f8112au);
                 }
             }
-            if (pistorm_fast_headerized_qemu_boot &&
+            if (pistorm_fast_rom_qemu_boot &&
                 BE32(m68k->PC) == 0x00f80f22u)
             {
                 uint32_t sp = BE32(m68k->A[7].u32);
@@ -3933,7 +4592,7 @@ for (int i=1; i < 2; i++)
                 m68k->A[7].u32 = BE32(sp + 4u);
                 m68k->PC = BE32(ret);
             }
-            if (pistorm_fast_headerized_qemu_boot &&
+            if (pistorm_fast_rom_qemu_boot &&
                 BE32(m68k->PC) == 0x00f81b1eu)
             {
                 uint32_t sp = BE32(m68k->A[7].u32);
@@ -3946,7 +4605,7 @@ for (int i=1; i < 2; i++)
                     m68k->PC = BE32(ret);
                 }
             }
-            if (pistorm_fast_headerized_qemu_boot &&
+            if (pistorm_fast_rom_qemu_boot &&
                 BE32(m68k->PC) == 0x00f8102cu)
             {
                 uint32_t execbase = BE32(m68k->A[6].u32);
@@ -3959,23 +4618,40 @@ for (int i=1; i < 2; i++)
                 m68k->A[7].u32 = BE32(sp + 4u);
                 m68k->PC = BE32(ret);
             }
-            if (pistorm_fast_headerized_qemu_boot &&
+            if (pistorm_fast_rom_qemu_boot &&
                 BE32(m68k->PC) == 0x00f81d60u)
             {
                 (void)pistorm_fast_makefunctions(m68k);
+            }
+            if (pistorm_fast_rom_qemu_boot &&
+                BE32(m68k->PC) == 0x00f81202u)
+            {
+                (void)pistorm_fast_rom_expand_stream(m68k);
+            }
+            if (pistorm_fast_rom_qemu_boot &&
+                pistorm_bootstrap_jit_clamped &&
+                (BE32(m68k->PC) == 0x00f81d4eu ||
+                 BE32(m68k->PC) == 0x00f8422cu))
+            {
+                /*
+                 * Past the allocator/expander chain, Kickstart can resume the
+                 * caller-selected JIT sizing. The ARM32 translator now forces
+                 * tiny units only for the specific fast-ROM helper windows.
+                 */
+                pistorm_restore_runtime_jit_control(m68k, BE32(m68k->PC));
             }
         }
 #endif
         if (last_PC != (uint32_t)m68k->PC)
         {
-            if (pistorm_fast_headerized_qemu_boot &&
-                pistorm_fast_headerized_residents != 0 &&
+            if (pistorm_fast_rom_qemu_boot &&
+                pistorm_fast_rom_residents != 0 &&
                 BE32(m68k->PC) == 0x00f81108u)
             {
-                m68k->A[2].u32 = BE32(pistorm_fast_headerized_residents);
+                m68k->A[2].u32 = BE32(pistorm_fast_rom_residents);
                 m68k->PC = BE32(0x00f8110cu);
             }
-            if (pistorm_fast_headerized_qemu_boot &&
+            if (pistorm_fast_rom_qemu_boot &&
                 BE32(m68k->PC) == 0x00f8113cu)
             {
                 uint32_t a1 = BE32(m68k->A[1].u32);
@@ -3998,7 +4674,7 @@ for (int i=1; i < 2; i++)
                     }
                 }
             }
-            if (pistorm_fast_headerized_qemu_boot &&
+            if (pistorm_fast_rom_qemu_boot &&
                 BE32(m68k->PC) == 0x00f81126u)
             {
                 uint32_t a1 = BE32(m68k->A[1].u32);
@@ -4026,7 +4702,7 @@ for (int i=1; i < 2; i++)
                 pistorm_trace_puts(" slot12c=");
                 pistorm_trace_put_hex32(slot12c);
                 pistorm_trace_puts(" fast=");
-                pistorm_trace_put_hex32(pistorm_fast_headerized_residents);
+                pistorm_trace_put_hex32(pistorm_fast_rom_residents);
                 put_char('\n');
                 pistorm_slot_trace_seen = 1;
             }
@@ -4215,19 +4891,19 @@ for (int i=1; i < 2; i++)
                     a6 >= 0xff000000u && a6 < 0xffffffffu - 0x230u)
                 {
                     volatile uint8_t *a6p = (volatile uint8_t *)(uintptr_t)a6;
-                    uint32_t s26 = BE32(*(volatile uint32_t *)(a6p + 0x26u));
-                    uint16_t s22 = BE16(*(volatile uint16_t *)(a6p + 0x22u));
-                    uint16_t s24 = BE16(*(volatile uint16_t *)(a6p + 0x24u));
-                    uint32_t s2a = BE32(*(volatile uint32_t *)(a6p + 0x2au));
-                    uint32_t s3e = BE32(*(volatile uint32_t *)(a6p + 0x3eu));
-                    uint32_t s4e = BE32(*(volatile uint32_t *)(a6p + 0x4eu));
-                    uint16_t s128 = BE16(*(volatile uint16_t *)(a6p + 0x128u));
-                    uint32_t s202 = BE32(*(volatile uint32_t *)(a6p + 0x202u));
-                    uint32_t s206 = BE32(*(volatile uint32_t *)(a6p + 0x206u));
-                    uint32_t s20e = BE32(*(volatile uint32_t *)(a6p + 0x20eu));
-                    uint32_t s222 = BE32(*(volatile uint32_t *)(a6p + 0x222u));
-                    uint32_t s226 = BE32(*(volatile uint32_t *)(a6p + 0x226u));
-                    uint32_t s22a = BE32(*(volatile uint32_t *)(a6p + 0x22au));
+                    uint32_t s26 = pistorm_debug_read_be32_unaligned(a6p + 0x26u);
+                    uint16_t s22 = pistorm_debug_read_be16_unaligned(a6p + 0x22u);
+                    uint16_t s24 = pistorm_debug_read_be16_unaligned(a6p + 0x24u);
+                    uint32_t s2a = pistorm_debug_read_be32_unaligned(a6p + 0x2au);
+                    uint32_t s3e = pistorm_debug_read_be32_unaligned(a6p + 0x3eu);
+                    uint32_t s4e = pistorm_debug_read_be32_unaligned(a6p + 0x4eu);
+                    uint16_t s128 = pistorm_debug_read_be16_unaligned(a6p + 0x128u);
+                    uint32_t s202 = pistorm_debug_read_be32_unaligned(a6p + 0x202u);
+                    uint32_t s206 = pistorm_debug_read_be32_unaligned(a6p + 0x206u);
+                    uint32_t s20e = pistorm_debug_read_be32_unaligned(a6p + 0x20eu);
+                    uint32_t s222 = pistorm_debug_read_be32_unaligned(a6p + 0x222u);
+                    uint32_t s226 = pistorm_debug_read_be32_unaligned(a6p + 0x226u);
+                    uint32_t s22a = pistorm_debug_read_be32_unaligned(a6p + 0x22au);
                     kprintf("[PISTORM:A6] a6=%08x 22=%04x 24=%04x 26=%08x 2a=%08x 3e=%08x 4e=%08x 128=%04x 202=%08x 206=%08x 20e=%08x 222=%08x 226=%08x 22a=%08x\n",
                             a6, s22, s24, s26, s2a, s3e, s4e, s128, s202, s206, s20e, s222, s226, s22a);
                 }
@@ -4238,30 +4914,75 @@ for (int i=1; i < 2; i++)
                     kprintf("[PISTORM:A6SLOT] a6=%08x slot12c=%08x fast=%08x\n",
                             a6,
                             slot12c,
-                            pistorm_fast_headerized_residents);
+                            pistorm_fast_rom_residents);
                 }
                 if (pc >= 0x00f81f9cu && pc < 0x00f82028u &&
                     a6 >= 0xff000000u && a6 < 0xffffffffu - 0x22eu)
                 {
                     volatile uint8_t *a6p = (volatile uint8_t *)(uintptr_t)a6;
-                    uint32_t list142 = BE32(*(volatile uint32_t *)(a6p + 0x142u));
-                    uint32_t list146 = BE32(*(volatile uint32_t *)(a6p + 0x146u));
-                    uint16_t s124 = BE16(*(volatile uint16_t *)(a6p + 0x124u));
+                    uint32_t list142 = pistorm_debug_read_be32_unaligned(a6p + 0x142u);
+                    uint32_t list146 = pistorm_debug_read_be32_unaligned(a6p + 0x146u);
+                    uint16_t s124 = pistorm_debug_read_be16_unaligned(a6p + 0x124u);
                     uint8_t s126 = *(volatile uint8_t *)(a6p + 0x126u);
                     uint8_t s127 = *(volatile uint8_t *)(a6p + 0x127u);
-                    uint32_t s222 = BE32(*(volatile uint32_t *)(a6p + 0x222u));
-                    uint32_t s226 = BE32(*(volatile uint32_t *)(a6p + 0x226u));
-                    uint32_t s22a = BE32(*(volatile uint32_t *)(a6p + 0x22au));
-                    kprintf("[PISTORM:ALLOC] a6=%08x 124=%04x 126=%02x 127=%02x 142=%08x 146=%08x 222=%08x 226=%08x 22a=%08x\n",
+                    uint32_t s222 = pistorm_debug_read_be32_unaligned(a6p + 0x222u);
+                    uint32_t s226 = pistorm_debug_read_be32_unaligned(a6p + 0x226u);
+                    uint32_t s22a = pistorm_debug_read_be32_unaligned(a6p + 0x22au);
+                    uint32_t head142 = 0xffffffffu;
+                    uint32_t head146 = 0xffffffffu;
+                    uint16_t list142_0e = 0xffffu;
+                    uint32_t list142_1c = 0xffffffffu;
+                    uint16_t head142_0e = 0xffffu;
+                    uint32_t head142_1c = 0xffffffffu;
+
+                    if (list142 < 0x01000000u)
+                    {
+                        head142 = BE32(pistorm_handle_special_read(list142, 4));
+                        list142_0e = (uint16_t)BE16((uint16_t)pistorm_handle_special_read(list142 + 0x0eu, 2));
+                        list142_1c = BE32(pistorm_handle_special_read(list142 + 0x1cu, 4));
+                    }
+                    if (list146 < 0x01000000u)
+                        head146 = BE32(pistorm_handle_special_read(list146, 4));
+                    if (head142 < 0x01000000u)
+                    {
+                        head142_0e = (uint16_t)BE16((uint16_t)pistorm_handle_special_read(head142 + 0x0eu, 2));
+                        head142_1c = BE32(pistorm_handle_special_read(head142 + 0x1cu, 4));
+                    }
+
+                    kprintf("[PISTORM:ALLOC] a6=%08x 124=%04x 126=%02x 127=%02x 142=%08x[%08x|0e=%04x|1c=%08x] 146=%08x[%08x] node142=%08x[0e=%04x|1c=%08x] 222=%08x 226=%08x 22a=%08x\n",
                             a6,
                             s124,
                             s126,
                             s127,
                             list142,
+                            head142,
+                            list142_0e,
+                            list142_1c,
                             list146,
+                            head146,
+                            head142,
+                            head142_0e,
+                            head142_1c,
                             s222,
                             s226,
                             s22a);
+                }
+                if ((pc == 0x00f81e78u || pc == 0x00f81e8au) &&
+                    a6 >= 0xff000000u && a6 < 0xffffffffu - 0x146u)
+                {
+                    uint32_t list142 = BE32(*(volatile uint32_t *)(uintptr_t)(a6 + 0x142u));
+                    uint32_t list146 = BE32(*(volatile uint32_t *)(uintptr_t)(a6 + 0x146u));
+                    kprintf("[PISTORM:ALLOCWALK] pc=%08x a1=%08x d1=%08x a6=%08x list142=%08x list146=%08x\n",
+                            pc,
+                            BE32(m68k->A[1].u32),
+                            BE32(m68k->D[1].u32),
+                            a6,
+                            list142,
+                            list146);
+                    if (list142 != 0)
+                        pistorm_debug_dump_memnode_chain("alloc142", list142);
+                    if (list146 != 0)
+                        pistorm_debug_dump_memnode_chain("alloc146", list146);
                 }
                 pistorm_tracepc_last_pc = pc;
                 pistorm_tracepc_last_a0 = a0;
@@ -4346,7 +5067,7 @@ for (int i=1; i < 2; i++)
             put_char('\n');
         }
 #ifdef PISTORM
-        if (addr == NULL && pistorm_fast_headerized_qemu_boot && m68k->PC == 0)
+        if (addr == NULL && pistorm_fast_rom_qemu_boot && m68k->PC == 0)
         {
             kprintf("[PISTORM:FASTEXIT] last=%08x d0=%08x d1=%08x a0=%08x a1=%08x a6=%08x sp=%08x sr=%04x\n",
                 last_PC,

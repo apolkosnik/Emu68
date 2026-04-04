@@ -424,8 +424,8 @@ uint32_t *EMIT_DIVS_W(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
     uint8_t update_mask = M68K_GetSRMask(*m68k_ptr - 1);
     uint8_t reg_a = RA_MapM68kRegister(&ptr, (opcode >> 9) & 7);
     uint8_t reg_q = 0xff;
-    uint8_t reg_quot = RA_AllocARMRegister(&ptr);
-    uint8_t reg_rem = RA_AllocARMRegister(&ptr);
+    uint8_t reg_quot = 0xff;
+    uint8_t reg_rem = 0xff;
     uint8_t ext_words = 0;
 #ifndef __aarch64__
     uint8_t reg_overflow = 0xff;
@@ -503,6 +503,9 @@ uint32_t *EMIT_DIVS_W(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
 
     *branch_nonzero = b_cc(ARM_CC_NE, ptr - branch_nonzero - 2);
 #endif
+
+    reg_quot = RA_AllocARMRegister(&ptr);
+    reg_rem = RA_AllocARMRegister(&ptr);
 
 
 #ifdef __aarch64__
@@ -656,8 +659,8 @@ uint32_t *EMIT_DIVU_W(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
     uint8_t update_mask = M68K_GetSRMask(*m68k_ptr - 1);
     uint8_t reg_a = RA_MapM68kRegister(&ptr, (opcode >> 9) & 7);
     uint8_t reg_q = 0xff;
-    uint8_t reg_quot = RA_AllocARMRegister(&ptr);
-    uint8_t reg_rem = RA_AllocARMRegister(&ptr);
+    uint8_t reg_quot = 0xff;
+    uint8_t reg_rem = 0xff;
     uint8_t ext_words = 0;
 #ifndef __aarch64__
     uint8_t reg_overflow = 0xff;
@@ -735,6 +738,9 @@ uint32_t *EMIT_DIVU_W(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr)
 
     *branch_nonzero = b_cc(ARM_CC_NE, ptr - branch_nonzero - 2);
 #endif
+
+    reg_quot = RA_AllocARMRegister(&ptr);
+    reg_rem = RA_AllocARMRegister(&ptr);
 
 #ifdef __aarch64__
     *ptr++ = uxth(reg_rem, reg_q);

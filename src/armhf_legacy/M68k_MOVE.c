@@ -69,6 +69,9 @@ uint32_t *EMIT_move(uint32_t *ptr, uint16_t **m68k_ptr, uint16_t *insn_consumed)
     uint8_t size = 1;
     uint8_t tmp = 0;
     uint8_t is_movea = (opcode & 0x01c0) == 0x0040;
+    uint8_t src_ea = opcode & 0x3f;
+    uint8_t src_mode = src_ea & 0x38;
+    uint8_t src_reg = src_ea & 7;
     int is_load_immediate = 0;
     uint32_t immediate_value = 0;
     int loaded_in_dest = 0;
@@ -344,9 +347,20 @@ uint32_t *EMIT_move(uint32_t *ptr, uint16_t **m68k_ptr, uint16_t *insn_consumed)
                     ptr = EMIT_LoadFromEffectiveAddress(ptr, size, &tmp_reg, opcode & 0x3f, *m68k_ptr, &ext_count, 0, NULL);
                 }
                 else if ((tmp & 0x38) == 0x08) {
-                    loaded_in_dest = 1;
-                    tmp_reg = RA_MapM68kRegisterForWrite(&ptr, 8 + (tmp & 7));
-                    ptr = EMIT_LoadFromEffectiveAddress(ptr, size, &tmp_reg, opcode & 0x3f, *m68k_ptr, &ext_count, 0, NULL);
+                    /*
+                     * movea.l (aN),aN and the related An-based source forms
+                     * must read the original address register value before the
+                     * destination mapping is created. Otherwise the source EA
+                     * load can see the fresh write-only mapping instead of the
+                     * live m68k base register.
+                     */
+                    if (!(src_reg == (tmp & 7) &&
+                          (src_mode == 0x08 || src_mode == 0x10 || src_mode == 0x18 ||
+                           src_mode == 0x20 || src_mode == 0x28 || src_mode == 0x30))) {
+                        loaded_in_dest = 1;
+                        tmp_reg = RA_MapM68kRegisterForWrite(&ptr, 8 + (tmp & 7));
+                        ptr = EMIT_LoadFromEffectiveAddress(ptr, size, &tmp_reg, opcode & 0x3f, *m68k_ptr, &ext_count, 0, NULL);
+                    }
                 }
             }
         }

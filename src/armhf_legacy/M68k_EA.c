@@ -667,6 +667,30 @@ static inline __attribute__((always_inline)) uint32_t *emit_special_load_hook(ui
     return ptr;
 }
 
+uint32_t *EMIT_HookSpecialLoad(uint32_t *ptr, uint8_t size, uint8_t addr_reg, uint8_t value_reg)
+{
+#ifndef __aarch64__
+    return emit_special_load_hook(ptr, size, addr_reg, value_reg);
+#else
+    (void)size;
+    (void)addr_reg;
+    (void)value_reg;
+    return ptr;
+#endif
+}
+
+uint32_t *EMIT_HookSpecialStore(uint32_t *ptr, uint8_t size, uint8_t addr_reg, uint8_t value_reg)
+{
+#ifndef __aarch64__
+    return emit_special_store_hook(ptr, size, addr_reg, value_reg);
+#else
+    (void)size;
+    (void)addr_reg;
+    (void)value_reg;
+    return ptr;
+#endif
+}
+
 static inline __attribute__((always_inline)) uint32_t *emit_special_load_helper_only(uint32_t *ptr, uint8_t size, uint8_t addr_reg, uint8_t value_reg)
 {
     uint8_t flags_reg = RA_AllocARMRegister(&ptr);
@@ -1827,8 +1851,11 @@ uint32_t *EMIT_LoadFromEffectiveAddress(uint32_t *ptr, uint8_t size, uint8_t *ar
                         if (reg_An == *arm_reg)
                         {
                             uint8_t addr_reg = RA_AllocARMRegister(&ptr);
+                            uint8_t load_reg = RA_AllocARMRegister(&ptr);
                             *ptr++ = mov_reg(addr_reg, reg_An);
-                            ptr = load_reg_from_addr_offset(ptr, size, addr_reg, *arm_reg, 0, 0);
+                            ptr = load_reg_from_addr_offset(ptr, size, addr_reg, load_reg, 0, 0);
+                            *ptr++ = mov_reg(*arm_reg, load_reg);
+                            RA_FreeARMRegister(&ptr, load_reg);
                             RA_FreeARMRegister(&ptr, addr_reg);
                         }
                         else
@@ -1871,9 +1898,12 @@ uint32_t *EMIT_LoadFromEffectiveAddress(uint32_t *ptr, uint8_t size, uint8_t *ar
                     *ptr++ = ldr_offset(reg_An, *arm_reg, 0);
 #else
                     uint8_t addr_reg = RA_AllocARMRegister(&ptr);
+                    uint8_t load_reg = RA_AllocARMRegister(&ptr);
                     *ptr++ = mov_reg(addr_reg, reg_An);
                     *ptr++ = add_immed(reg_An, reg_An, 4);
-                    ptr = load_reg_from_addr_offset(ptr, size, addr_reg, *arm_reg, 0, 0);
+                    ptr = load_reg_from_addr_offset(ptr, size, addr_reg, load_reg, 0, 0);
+                    *ptr++ = mov_reg(*arm_reg, load_reg);
+                    RA_FreeARMRegister(&ptr, load_reg);
                     RA_FreeARMRegister(&ptr, addr_reg);
 #endif
                 }
@@ -1936,9 +1966,12 @@ uint32_t *EMIT_LoadFromEffectiveAddress(uint32_t *ptr, uint8_t size, uint8_t *ar
                     *ptr++ = ldur_offset(reg_An, *arm_reg, -4);
 #else
                     uint8_t addr_reg = RA_AllocARMRegister(&ptr);
+                    uint8_t load_reg = RA_AllocARMRegister(&ptr);
                     *ptr++ = sub_immed(addr_reg, reg_An, 4);
                     *ptr++ = mov_reg(reg_An, addr_reg);
-                    ptr = load_reg_from_addr_offset(ptr, size, addr_reg, *arm_reg, 0, 0);
+                    ptr = load_reg_from_addr_offset(ptr, size, addr_reg, load_reg, 0, 0);
+                    *ptr++ = mov_reg(*arm_reg, load_reg);
+                    RA_FreeARMRegister(&ptr, load_reg);
                     RA_FreeARMRegister(&ptr, addr_reg);
 #endif
                 }
