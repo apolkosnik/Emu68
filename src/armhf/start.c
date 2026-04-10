@@ -15,18 +15,10 @@
 
 void boot(uintptr_t dummy, uintptr_t arch, uintptr_t atags, uintptr_t dummy2);
 
-/* Missing symbols needed for linking */
 struct M68KState *__m68k_state;
-
-void M68K_PrintContext(struct M68KState *m68k)
-{
-    /* Minimal implementation for ARM */
-    (void)m68k;
-}
 
 /* Add missing GCC builtin */
 int __popcountsi2(unsigned int a) {
-    /* Simple population count implementation */
     int count = 0;
     while (a) {
         count += a & 1;
@@ -151,36 +143,52 @@ __attribute__((used, section(".mmu"))) uint32_t mmu_table[4096] = {
     [0xfff] = 0x00701c0e
 };
 
-/* Trivial virtual to physical translator, fetches data from MMU table and assumes 1M pages */
-uintptr_t mmu_virt2phys(uintptr_t virt_addr)
-{
-    uint32_t page = virt_addr >> 20;
-    uint32_t offset = virt_addr & 0x000fffff;
-
-    offset |= mmu_table[page] & 0xfff00000;
-
-    return offset;
-}
-
-void mmu_map(uintptr_t phys, uintptr_t virt, uintptr_t length, uint32_t attr_low, uint32_t attr_high)
-{
-    uintptr_t phys_base = phys & ~0x000fffffu;
-    uintptr_t virt_base = virt & ~0x000fffffu;
-    uintptr_t end = (virt + length + 0x000fffffu) & ~0x000fffffu;
-    (void)attr_high;
-
-    while (virt_base < end)
-    {
-        mmu_table[virt_base >> 20] = (phys_base & 0xfff00000u) | (attr_low & 0x000fffffu);
-        phys_base += 0x00100000u;
-        virt_base += 0x00100000u;
-    }
-
-    arm_flush_cache((uintptr_t)mmu_table, sizeof(mmu_table));
-    asm volatile("dsb" ::: "memory");
-    asm volatile("mcr p15,0,%0,c8,c7,0" :: "r"(0) : "memory");
-    asm volatile("dsb\n\tisb" ::: "memory");
-}
-
 __attribute__((used)) void * mmu_table_ptr __attribute__((used, section(".startup @"))) = (void *)((uintptr_t)mmu_table - 0xff800000);
 __attribute__((used)) void * boot_address __attribute__((used, section(".startup @"))) = (void *)((intptr_t)boot);
+
+/*
+ * M68K_LoadContext / M68K_SaveContext for ARM32.
+ *
+ * On AArch64 these use fixed register bindings (x13-x29) and SIMD
+ * registers (v28-v31) to hold the m68k state across JIT calls.
+ * On ARM32 the JIT uses dynamic register allocation, so the context
+ * is loaded/stored from the M68KState struct through r11 (REG_CTX).
+ * These functions store/restore only the control state that the
+ * JIT execution loop needs between translation unit calls.
+ */
+void M68K_LoadContext(struct M68KState *ctx)
+{
+    __m68k_state = ctx;
+}
+
+void M68K_SaveContext(struct M68KState *ctx)
+{
+    (void)ctx;
+    /* On ARM32, JIT code works through the M68KState pointer directly.
+     * Registers are loaded/stored by the register allocator at JIT-emit
+     * time, so there is nothing extra to save here.
+     */
+}
+
+void M68K_PrintContext(struct M68KState *m68k)
+{
+    kprintf("[JIT] M68K Context:\n[JIT] ");
+
+    for (int i = 0; i < 8; i++) {
+        if (i == 4)
+            kprintf("\n[JIT] ");
+        kprintf("D%d: %08x ", i, BE32(m68k->D[i].u32));
+    }
+    kprintf("\n[JIT] ");
+    for (int i = 0; i < 8; i++) {
+        if (i == 4)
+            kprintf("\n[JIT] ");
+        kprintf("A%d: %08x ", i, BE32(m68k->A[i].u32));
+    }
+    kprintf("\n[JIT] ");
+    kprintf("PC: %08x  SR: %04x  USP: %08x  ISP: %08x  MSP: %08x\n",
+        BE32(m68k->PC), BE16(m68k->SR),
+        BE32(m68k->USP.u32), BE32(m68k->ISP.u32), BE32(m68k->MSP.u32));
+    kprintf("[JIT] VBR: %08x  CACR: %08x\n",
+        BE32(m68k->VBR), BE32(m68k->CACR));
+}

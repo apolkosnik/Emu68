@@ -4,7 +4,7 @@
 #ifdef PISTORM
 #ifndef PISTORM32
 #define PS_PROTOCOL_IMPL
-#include "pistorm/ps_protocol.h"
+#include "../pistorm/ps_protocol.h"
 #endif
 #endif
 

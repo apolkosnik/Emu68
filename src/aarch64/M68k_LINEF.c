@@ -13,7 +13,7 @@
 #include "EmuFeatures.h"
 #include "lists.h"
 #include "tlsf.h"
-#include "math/libm.h"
+#include "../math/libm.h"
 #include "cache.h"
 
 extern uint8_t reg_Load96;

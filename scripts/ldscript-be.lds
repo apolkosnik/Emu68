@@ -16,6 +16,9 @@ SECTIONS
         *(.stub)
         *(.gnu.warning)
         *(.gnu.linkonce.t.*)
+        . = ALIGN(32);
+        __vectors_start = . ;
+        *(.vectors)
     }
 
     .rodata ALIGN(0x1000) :

@@ -38,25 +38,6 @@ set(BASE_FILES
 )
 
 set(EMU68_FILES
-    src/M68k_Translator.c
-    src/M68k_SR.c
-    src/M68k_MULDIV.c
-    src/M68k_MOVE.c
-    src/M68k_EA.c
-    src/M68k_LINE0.c
-    src/M68k_LINE4.c
-    src/M68k_LINE5.c
-    src/M68k_LINE6.c
-    src/M68k_LINE8.c
-    src/M68k_LINE9.c
-    src/M68k_LINEB.c
-    src/M68k_LINEC.c
-    src/M68k_LINED.c
-    src/M68k_LINEE.c
-    src/M68k_LINEF.c
-    src/M68k_Exception.c
-    src/M68k_CC.c
-    
     src/math/__rem_pio2.c
     src/math/__rem_pio2_large.c
     src/math/__tan.c
@@ -185,33 +166,35 @@ if(${TARGET_ARCH} STREQUAL "armhf")
             "-DCMAKE_TOOLCHAIN_FILE=${CMAKE_SOURCE_DIR}/toolchains/arm-elf.cmake.")
     endif()
 
-    set(ARMHF_LEGACY_FILES
-        src/armhf_legacy/M68k_Translator.c
-        src/armhf_legacy/M68k_SR.c
-        src/armhf_legacy/M68k_MULDIV.c
-        src/armhf_legacy/M68k_MOVE.c
-        src/armhf_legacy/M68k_EA.c
-        src/armhf_legacy/M68k_LINE0.c
-        src/armhf_legacy/M68k_LINE4.c
-        src/armhf_legacy/M68k_LINE5.c
-        src/armhf_legacy/M68k_LINE6.c
-        src/armhf_legacy/M68k_LINE8.c
-        src/armhf_legacy/M68k_LINE9.c
-        src/armhf_legacy/M68k_LINEB.c
-        src/armhf_legacy/M68k_LINEC.c
-        src/armhf_legacy/M68k_LINED.c
-        src/armhf_legacy/M68k_LINEE.c
-        src/armhf_legacy/M68k_LINEF.c
-        src/armhf_legacy/M68k_Exception.c
-        src/armhf_legacy/M68k_CC.c
+    set(ARMHF_TRANSLATOR_FILES
+        src/armhf/M68k_Translator.c
+        src/armhf/M68k_SR.c
+        src/armhf/M68k_MULDIV.c
+        src/armhf/M68k_MOVE.c
+        src/armhf/M68k_EA.c
+        src/armhf/M68k_LINE0.c
+        src/armhf/M68k_LINE4.c
+        src/armhf/M68k_LINE5.c
+        src/armhf/M68k_LINE6.c
+        src/armhf/M68k_LINE8.c
+        src/armhf/M68k_LINE9.c
+        src/armhf/M68k_LINEB.c
+        src/armhf/M68k_LINEC.c
+        src/armhf/M68k_LINED.c
+        src/armhf/M68k_LINEE.c
+        src/armhf/M68k_LINEF.c
+        src/armhf/M68k_Exception.c
+        src/armhf/M68k_CC.c
     )
-    list(FILTER EMU68_FILES EXCLUDE REGEX "^src/M68k_")
-    list(APPEND EMU68_FILES ${ARMHF_LEGACY_FILES})
-    set_source_files_properties(${ARMHF_LEGACY_FILES} PROPERTIES COMPILE_FLAGS
+    list(APPEND EMU68_FILES ${ARMHF_TRANSLATOR_FILES})
+    set_source_files_properties(${ARMHF_TRANSLATOR_FILES} PROPERTIES COMPILE_FLAGS
         "-Wno-unused-variable -Wno-unused-but-set-variable -Wno-unused-parameter -Wno-unused-function -Wno-overflow -Wno-shift-count-overflow")
     list(APPEND ARCH_FILES
         src/armhf/start.c
+        src/armhf/mmu.c
         src/armhf/RegisterAllocator.c
+        src/armhf/vectors.c
+        src/armhf/ExecutionLoop.c
     )
     set(CAPSTONE_ARM_SUPPORT ON CACHE BOOL "CAPSTONE_ARM_SUPPORT")
     set(LINKER_SCRIPT ${CMAKE_SOURCE_DIR}/scripts/ldscript-be.lds)
@@ -225,19 +208,41 @@ else()
 
     # ExecutionLoop breaks the C ABI for aarch64. All m68k registers are fixed (x13-x29)
     # The temporary arm code and PC are fixed too (x12, x18)
-    set_source_files_properties(src/ExecutionLoop.c PROPERTIES COMPILE_FLAGS 
+    set_source_files_properties(src/aarch64/ExecutionLoop.c PROPERTIES COMPILE_FLAGS 
         "-fcall-used-x4 -fcall-used-x5 -fcall-used-x6 -fcall-used-x7 -fcall-used-x8 \
          -fcall-used-x9 -fcall-used-x10 -fcall-used-x11 -ffixed-x12 -ffixed-x18  \
          -ffixed-x19 -ffixed-x20 -ffixed-x21 -ffixed-x22 -ffixed-x23 -ffixed-x24 -ffixed-x25 -ffixed-x26  \
          -ffixed-x13 -ffixed-x14 -ffixed-x15 -ffixed-x16 -ffixed-x17 -ffixed-x27 -ffixed-x28 -ffixed-x29")
+
+    set(AARCH64_TRANSLATOR_FILES
+        src/aarch64/M68k_Translator.c
+        src/aarch64/M68k_SR.c
+        src/aarch64/M68k_MULDIV.c
+        src/aarch64/M68k_MOVE.c
+        src/aarch64/M68k_EA.c
+        src/aarch64/M68k_LINE0.c
+        src/aarch64/M68k_LINE4.c
+        src/aarch64/M68k_LINE5.c
+        src/aarch64/M68k_LINE6.c
+        src/aarch64/M68k_LINE8.c
+        src/aarch64/M68k_LINE9.c
+        src/aarch64/M68k_LINEB.c
+        src/aarch64/M68k_LINEC.c
+        src/aarch64/M68k_LINED.c
+        src/aarch64/M68k_LINEE.c
+        src/aarch64/M68k_LINEF.c
+        src/aarch64/M68k_Exception.c
+        src/aarch64/M68k_CC.c
+    )
 
     list(APPEND ARCH_FILES
         src/aarch64/start.c
         src/aarch64/mmu.c
         src/aarch64/RegisterAllocator64.c
         src/aarch64/vectors.c
+        src/aarch64/ExecutionLoop.c
     )
-    list(APPEND EMU68_FILES src/ExecutionLoop.c)
+    list(APPEND EMU68_FILES ${AARCH64_TRANSLATOR_FILES})
     set(CAPSTONE_ARM64_SUPPORT ON CACHE BOOL "CAPSTONE_ARM64_SUPPORT")
     set(LINKER_SCRIPT ${CMAKE_SOURCE_DIR}/scripts/ldscript-be64.lds)
     add_link_options(-Wl,-EB -Wl,-Map -Wl,${CMAKE_BINARY_DIR}/Emu68.map -Wl,--format=elf64-bigaarch64 -T ${LINKER_SCRIPT})
