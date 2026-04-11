@@ -20,7 +20,9 @@
 #endif
 
 static int serial_up = 0;
+#ifdef PISTORM
 static int uart_console = 0;
+#endif
 
 #define ARM_PERIIOBASE ((intptr_t)io_base)
 

@@ -1453,12 +1453,17 @@ static void pistorm_init_fake_lowram(void)
 {
     uintptr_t size_bytes;
     uintptr_t slowram_size_bytes;
+    uintptr_t sink_size_bytes;
     uintptr_t total_bytes;
     uintptr_t virt_base;
     uintptr_t phys_base;
     uintptr_t slowram_virt;
     uintptr_t slowram_phys;
+    uintptr_t sink_virt;
+    uintptr_t sink_phys;
     uint32_t desc_attrs;
+    uint32_t sink_descriptor;
+    uint32_t aliased_sections;
 
     if (pistorm_fake_lowram_mb == 0)
         pistorm_fake_lowram_mb = pistorm_boot_fake_lowram_mb;
@@ -1471,11 +1476,14 @@ static void pistorm_init_fake_lowram(void)
 
     size_bytes = (uintptr_t)pistorm_fake_lowram_mb << 20;
     slowram_size_bytes = 0x00200000u;
-    total_bytes = size_bytes + slowram_size_bytes;
+    sink_size_bytes = 0x00100000u;
+    total_bytes = size_bytes + slowram_size_bytes + sink_size_bytes;
     virt_base = ((uintptr_t)top_of_ram - 0x02000000u - total_bytes) & ~0x000fffffu;
     phys_base = mmu_virt2phys(virt_base) & ~0x000fffffu;
     slowram_virt = virt_base + size_bytes;
     slowram_phys = phys_base + size_bytes;
+    sink_virt = slowram_virt + slowram_size_bytes;
+    sink_phys = slowram_phys + slowram_size_bytes;
     desc_attrs = mmu_table[0] & 0x000fffffu;
 
     memset((void *)virt_base, 0, total_bytes);
@@ -1492,6 +1500,54 @@ static void pistorm_init_fake_lowram(void)
     for (uint32_t i = 0; i < pistorm_fake_lowram_mb; i++)
         mmu_table[i] = (uint32_t)(phys_base + ((uintptr_t)i << 20)) | desc_attrs;
 
+    /*
+     * Alias every currently-unmapped 1 MB section onto a single "sink"
+     * section so that stray JIT stores to m68k addresses outside valid
+     * RAM/ROM/IO land in scratch memory instead of taking a data abort.
+     *
+     * DiagROM's chip-RAM bit-walk test at pc=0xf80252 walks a moving
+     * "1" through every power-of-two m68k address up to 0x80000000,
+     * including sections far above the identity-mapped QEMU RAM range
+     * (sections 0x400..0xff7 for raspi2b). Without the sink, the ARM32
+     * store_reg_to_addr paired-halfword STRH faults, and since the
+     * ARMv7 abort vector does not set up an abort-mode stack, the
+     * handler itself re-aborts and spins forever. The shadow mapping
+     * at sections 0xff8..0xfff must stay intact (it mirrors the kernel
+     * image that the runtime executes from), so leave those alone.
+     */
+    sink_descriptor = (uint32_t)sink_phys | desc_attrs;
+    aliased_sections = 0;
+    /*
+     * Alias every currently device-mapped 1 MB section below the SoC
+     * peripheral window onto a single scratch "sink" so that stray JIT
+     * stores to m68k addresses outside valid RAM/ROM/IO land in a
+     * harmless page instead of taking a data abort.
+     *
+     * DiagROM's chip-RAM bit-walk at pc=0xf80252 walks a moving "1" through
+     * every power-of-two m68k address up to 0x80000000, so the JIT emits
+     * direct paired-halfword STRH at ARM virt 0x40000000/0x80000000/etc.
+     * Those sections default to strongly-ordered device (attr 0x0c06 from
+     * the early identity-map fill at start_rpi.c:2930) pointing at unmapped
+     * raspi2b bus space, which faults; the ARMv7 abort vector has no abort
+     * stack so the handler itself re-aborts and the CPU spins.
+     *
+     * Sections already retargeted to cached RAM (attr 0x1c0e) by the
+     * system-memory identity-map loop in raspi_startup are left alone.
+     * The SoC peripheral window at sections 0xf20..start_map-1 (see the
+     * /soc ranges mapping below raspi_startup) and the kernel image mirror
+     * at 0xff8..0xfff must also stay intact, so the loop stops at 0xf00.
+     */
+    for (uint32_t i = pistorm_fake_lowram_mb; i < 0xf00u; i++)
+    {
+        uint32_t desc = mmu_table[i];
+
+        if ((desc & 0x000fffffu) != desc_attrs)
+        {
+            mmu_table[i] = sink_descriptor;
+            aliased_sections++;
+        }
+    }
+
     pistorm_fake_lowram_virt = virt_base;
     pistorm_fake_lowram_phys = phys_base;
     pistorm_fake_slowram_virt = slowram_virt;
@@ -1505,6 +1561,8 @@ static void pistorm_init_fake_lowram(void)
         pistorm_fake_lowram_mb, (uint32_t)virt_base, (uint32_t)phys_base);
     kprintf("[BOOT] ARM32 PiStorm fake slow RAM: %d MB @ virt=%08x phys=%08x\n",
         (uint32_t)(slowram_size_bytes >> 20), (uint32_t)slowram_virt, (uint32_t)slowram_phys);
+    kprintf("[BOOT] ARM32 PiStorm stray-store sink: 1 MB @ virt=%08x phys=%08x (%u sections aliased)\n",
+        (uint32_t)sink_virt, (uint32_t)sink_phys, aliased_sections);
     kprintf("[BOOT] ARM32 PiStorm fake low RAM seed low0=%08x\n",
         BE32(*(volatile uint32_t *)virt_base));
 }
@@ -2900,7 +2958,9 @@ void boot(uintptr_t dummy, uintptr_t arch, uintptr_t atags, uintptr_t dummy2)
 
     e = dt_find_node("/");
     char *compatible = (char*)0;
+#ifdef PISTORM
     char *model = (char*)0;
+#endif
     int raspi4 = 0;
     if (e)
     {
@@ -2912,12 +2972,14 @@ void boot(uintptr_t dummy, uintptr_t arch, uintptr_t atags, uintptr_t dummy2)
                 raspi4 = 1;
         }
 
+#ifdef PISTORM
         p = dt_find_property(e, "model");
         if (p && p->op_value)
         {
             model = p->op_value;
             pistorm_qemu_model = strstr(model, "QEMU") != NULL;
         }
+#endif
     }
 
     e = dt_find_node("/chosen");
@@ -3110,8 +3172,10 @@ void boot(uintptr_t dummy, uintptr_t arch, uintptr_t atags, uintptr_t dummy2)
         void *image_start, *image_end;
         void *hunks;
         uintptr_t hunk_base = 0x7f000000;
+#ifdef PISTORM
         uintptr_t image_size;
         uint32_t image_magic;
+#endif
         of_property_t *p = dt_find_property(e, "linux,initrd-start");
         if (p == NULL || p->op_value == NULL)
         {
@@ -3128,8 +3192,10 @@ void boot(uintptr_t dummy, uintptr_t arch, uintptr_t atags, uintptr_t dummy2)
         }
 
         image_end = (void*)(intptr_t)BE32(*(uint32_t*)p->op_value);
+#ifdef PISTORM
         image_size = (uintptr_t)image_end - (uintptr_t)image_start;
         image_magic = BE32(*(uint32_t*)image_start);
+#endif
 
         kprintf("[BOOT] Loading executable from %p-%p\n", image_start, image_end);
 #ifdef PISTORM
@@ -3396,6 +3462,7 @@ uint8_t *chunky; //[DATA_SIZE];
 uint32_t last_PC = 0xffffffff;
 
 #ifndef __aarch64__
+#ifdef PISTORM
 void pistorm_special_read_trampoline_probe(uint32_t address, uint32_t size, uint32_t value)
 {
     if (pistorm_mmio_trace &&
@@ -3438,11 +3505,11 @@ uint32_t __attribute__((naked, noinline)) pistorm_handle_special_read_trampoline
     (void)size;
 
     asm volatile(
+        "push {r4-r7, ip, lr}\n"
         "mov r4, sp\n"
         "mov r5, r0\n"
         "mov r6, r1\n"
         "bic sp, sp, #7\n"
-        "push {r4-r7, ip, lr}\n"
         "mov r0, r5\n"
         "mov r1, r6\n"
         "bl pistorm_special_read_trampoline_entry_probe\n"
@@ -3455,10 +3522,11 @@ uint32_t __attribute__((naked, noinline)) pistorm_handle_special_read_trampoline
         "mov r2, r7\n"
         "bl pistorm_special_read_trampoline_probe\n"
         "mov r0, r7\n"
-        "pop {r4-r7, ip, lr}\n"
         "mov sp, r4\n"
+        "pop {r4-r7, ip, lr}\n"
         "bx lr\n");
 }
+#endif /* PISTORM */
 
 static void __attribute__((naked, noinline)) armhf_call_translation_unit(void (*arm_code)(struct M68KState *), struct M68KState *ctx)
 {
@@ -3901,6 +3969,7 @@ for (int i=1; i < 2; i++)
     __m68k.JIT_CONTROL |= (emu68_icnt & JCCB_INSN_DEPTH_MASK) << JCCB_INSN_DEPTH;
     __m68k.JIT_CONTROL |= (emu68_irng & JCCB_INLINE_RANGE_MASK) << JCCB_INLINE_RANGE;
     __m68k.JIT_CONTROL |= (emu68_lcnt & JCCB_LOOP_COUNT_MASK) << JCCB_LOOP_COUNT;
+#ifdef PISTORM
     pistorm_saved_jit_control = __m68k.JIT_CONTROL;
     pistorm_bootstrap_jit_clamped = 0;
 
@@ -3916,6 +3985,7 @@ for (int i=1; i < 2; i++)
         __m68k.JIT_CONTROL |= (1u & JCCB_LOOP_COUNT_MASK) << JCCB_LOOP_COUNT;
         pistorm_bootstrap_jit_clamped = 1;
     }
+#endif
 
 #ifdef PISTORM
     /*
@@ -3953,8 +4023,10 @@ for (int i=1; i < 2; i++)
     uint64_t pistorm_next_progress_trace = 0;
 #endif
 
+#ifdef PISTORM
     if (pistorm_step_trace)
         pistorm_trace_puts("[PISTORM:LOOP] before-t1\n");
+#endif
     t1 = LE32(*(volatile uint32_t*)0xf2003004) | (uint64_t)LE32(*(volatile uint32_t *)0xf2003008) << 32;
 #ifdef PISTORM
     if (pistorm_step_trace)
@@ -4644,6 +4716,7 @@ for (int i=1; i < 2; i++)
 #endif
         if (last_PC != (uint32_t)m68k->PC)
         {
+#ifdef PISTORM
             if (pistorm_fast_rom_qemu_boot &&
                 pistorm_fast_rom_residents != 0 &&
                 BE32(m68k->PC) == 0x00f81108u)
@@ -4741,19 +4814,22 @@ for (int i=1; i < 2; i++)
                     }
                 }
             }
-            if (pistorm_step_trace && ctx_count < 8)
+            if (pistorm_step_trace && ctx_count < 32)
             {
                 pistorm_trace_puts("[PISTORM:GETTU] enter pc=");
                 pistorm_trace_put_hex32(BE32(m68k->PC));
                 put_char('\n');
             }
+#endif /* PISTORM */
             unit = M68K_GetTranslationUnit((uint16_t *)(BE32((uint32_t)m68k->PC)));
-            if (pistorm_step_trace && ctx_count < 8)
+#ifdef PISTORM
+            if (pistorm_step_trace && ctx_count < 32)
             {
                 pistorm_trace_puts("[PISTORM:GETTU] leave unit=");
                 pistorm_trace_put_hex32((uint32_t)(uintptr_t)unit);
                 put_char('\n');
             }
+#endif /* PISTORM */
             last_PC = (uint32_t)m68k->PC;
         }
 
@@ -4992,80 +5068,92 @@ for (int i=1; i < 2; i++)
         }
 #endif
 
-        uint32_t trace_call_last_pc = last_PC;
-        int emit_trace_return = 0;
-
         *(void**)(&arm_code) = unit->mt_ARMEntryPoint;
-        if (pistorm_step_trace && ctx_count < 8)
+#ifdef PISTORM
         {
-            pistorm_trace_puts("[PISTORM:ENTRY] arm=");
-            pistorm_trace_put_hex32((uint32_t)(uintptr_t)arm_code);
-            pistorm_trace_puts(" unit=");
-            pistorm_trace_put_hex32((uint32_t)(uintptr_t)unit);
-            put_char('\n');
-        }
-        if (pistorm_step_trace && ctx_count < 8)
-        {
-            pistorm_trace_puts("[PISTORM:PRECALL] n=");
-            pistorm_trace_put_hex32((uint32_t)ctx_count);
-            pistorm_trace_puts(" pc=");
-            pistorm_trace_put_hex32(BE32(m68k->PC));
-            pistorm_trace_puts(" last=");
-            pistorm_trace_put_hex32(last_PC);
-            pistorm_trace_puts(" jit=");
-            pistorm_trace_put_hex32(__m68k.JIT_CONTROL);
-            put_char('\n');
-        }
-        else if (pistorm_tracepc_end > pistorm_tracepc_start &&
-                 last_PC >= pistorm_tracepc_start &&
-                 last_PC < pistorm_tracepc_end)
-        {
-            emit_trace_return = 1;
-            pistorm_trace_puts("[PISTORM:TRACECALL] n=");
-            pistorm_trace_put_hex32((uint32_t)ctx_count);
-            pistorm_trace_puts(" pc=");
-            pistorm_trace_put_hex32(BE32(m68k->PC));
-            pistorm_trace_puts(" last=");
-            pistorm_trace_put_hex32(last_PC);
-            put_char('\n');
-        }
+            uint32_t trace_call_last_pc = last_PC;
+            int emit_trace_return = 0;
 
+            if (pistorm_step_trace && ctx_count < 32)
+            {
+                pistorm_trace_puts("[PISTORM:ENTRY] arm=");
+                pistorm_trace_put_hex32((uint32_t)(uintptr_t)arm_code);
+                pistorm_trace_puts(" unit=");
+                pistorm_trace_put_hex32((uint32_t)(uintptr_t)unit);
+                put_char('\n');
+            }
+            if (pistorm_step_trace && ctx_count < 32)
+            {
+                pistorm_trace_puts("[PISTORM:PRECALL] n=");
+                pistorm_trace_put_hex32((uint32_t)ctx_count);
+                pistorm_trace_puts(" pc=");
+                pistorm_trace_put_hex32(BE32(m68k->PC));
+                pistorm_trace_puts(" last=");
+                pistorm_trace_put_hex32(last_PC);
+                pistorm_trace_puts(" jit=");
+                pistorm_trace_put_hex32(__m68k.JIT_CONTROL);
+                put_char('\n');
+            }
+            else if (pistorm_tracepc_end > pistorm_tracepc_start &&
+                     last_PC >= pistorm_tracepc_start &&
+                     last_PC < pistorm_tracepc_end)
+            {
+                emit_trace_return = 1;
+                pistorm_trace_puts("[PISTORM:TRACECALL] n=");
+                pistorm_trace_put_hex32((uint32_t)ctx_count);
+                pistorm_trace_puts(" pc=");
+                pistorm_trace_put_hex32(BE32(m68k->PC));
+                pistorm_trace_puts(" last=");
+                pistorm_trace_put_hex32(last_PC);
+                put_char('\n');
+            }
+
+            armhf_call_translation_unit(arm_code, m68k);
+
+            if (pistorm_step_trace && ctx_count < 32)
+            {
+                pistorm_trace_puts("[PISTORM:POSTCALL] n=");
+                pistorm_trace_put_hex32((uint32_t)ctx_count);
+                pistorm_trace_puts(" pc=");
+                pistorm_trace_put_hex32(BE32(m68k->PC));
+                pistorm_trace_puts(" sr=");
+                pistorm_trace_put_hex32(BE16(m68k->SR));
+                pistorm_trace_puts(" d0=");
+                pistorm_trace_put_hex32(BE32(m68k->D[0].u32));
+                pistorm_trace_puts(" d5=");
+                pistorm_trace_put_hex32(BE32(m68k->D[5].u32));
+                pistorm_trace_puts(" a0=");
+                pistorm_trace_put_hex32(BE32(m68k->A[0].u32));
+                pistorm_trace_puts(" a6=");
+                pistorm_trace_put_hex32(BE32(m68k->A[6].u32));
+                pistorm_trace_puts(" a7=");
+                pistorm_trace_put_hex32(BE32(m68k->A[7].u32));
+                put_char('\n');
+            }
+            else if (emit_trace_return)
+            {
+                pistorm_trace_puts("[PISTORM:TRACERET] n=");
+                pistorm_trace_put_hex32((uint32_t)ctx_count);
+                pistorm_trace_puts(" pc=");
+                pistorm_trace_put_hex32(BE32(m68k->PC));
+                pistorm_trace_puts(" from=");
+                pistorm_trace_put_hex32(trace_call_last_pc);
+                pistorm_trace_puts(" last=");
+                pistorm_trace_put_hex32(last_PC);
+                pistorm_trace_puts(" sr=");
+                pistorm_trace_put_hex32(BE16(m68k->SR));
+                pistorm_trace_puts(" d0=");
+                pistorm_trace_put_hex32(BE32(m68k->D[0].u32));
+                pistorm_trace_puts(" d3=");
+                pistorm_trace_put_hex32(BE32(m68k->D[3].u32));
+                pistorm_trace_puts(" a0=");
+                pistorm_trace_put_hex32(BE32(m68k->A[0].u32));
+                put_char('\n');
+            }
+        }
+#else
         armhf_call_translation_unit(arm_code, m68k);
-
-        if (pistorm_step_trace && ctx_count < 8)
-        {
-            pistorm_trace_puts("[PISTORM:POSTCALL] n=");
-            pistorm_trace_put_hex32((uint32_t)ctx_count);
-            pistorm_trace_puts(" pc=");
-            pistorm_trace_put_hex32(BE32(m68k->PC));
-            pistorm_trace_puts(" sr=");
-            pistorm_trace_put_hex32(BE16(m68k->SR));
-            pistorm_trace_puts(" d0=");
-            pistorm_trace_put_hex32(BE32(m68k->D[0].u32));
-            pistorm_trace_puts(" a0=");
-            pistorm_trace_put_hex32(BE32(m68k->A[0].u32));
-            put_char('\n');
-        }
-        else if (emit_trace_return)
-        {
-            pistorm_trace_puts("[PISTORM:TRACERET] n=");
-            pistorm_trace_put_hex32((uint32_t)ctx_count);
-            pistorm_trace_puts(" pc=");
-            pistorm_trace_put_hex32(BE32(m68k->PC));
-            pistorm_trace_puts(" from=");
-            pistorm_trace_put_hex32(trace_call_last_pc);
-            pistorm_trace_puts(" last=");
-            pistorm_trace_put_hex32(last_PC);
-            pistorm_trace_puts(" sr=");
-            pistorm_trace_put_hex32(BE16(m68k->SR));
-            pistorm_trace_puts(" d0=");
-            pistorm_trace_put_hex32(BE32(m68k->D[0].u32));
-            pistorm_trace_puts(" d3=");
-            pistorm_trace_put_hex32(BE32(m68k->D[3].u32));
-            pistorm_trace_puts(" a0=");
-            pistorm_trace_put_hex32(BE32(m68k->A[0].u32));
-            put_char('\n');
-        }
+#endif
 #ifdef PISTORM
         if (addr == NULL && pistorm_fast_rom_qemu_boot && m68k->PC == 0)
         {

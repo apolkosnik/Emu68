@@ -13,12 +13,14 @@
 #include "RegisterAllocator.h"
 
 #ifndef __aarch64__
+#ifdef PISTORM
 extern void pistorm_handle_overlay_byte_store(uint32_t address, uint32_t value);
 extern void pistorm_handle_special_write(uint32_t address, uint32_t value, uint32_t size);
 extern uint32_t pistorm_handle_special_read(uint32_t address, uint32_t size);
 extern uint32_t pistorm_handle_special_read_trampoline(uint32_t address, uint32_t size);
 extern void pistorm_special_read_callsite_probe(uint32_t address, uint32_t size);
 extern uint32_t overlay;
+#endif
 
 static inline __attribute__((always_inline)) uint32_t *emit_blx_literal(uint32_t *ptr, uintptr_t target)
 {
@@ -33,6 +35,7 @@ static inline __attribute__((always_inline)) uint32_t *emit_blx_literal(uint32_t
     return ptr;
 }
 
+#ifdef PISTORM
 static inline __attribute__((always_inline)) uint32_t *emit_overlay_byte_store_hook(uint32_t *ptr, uint8_t addr_reg, uint8_t value_reg)
 {
     uint8_t tmp = RA_AllocARMRegister(&ptr);
@@ -80,9 +83,14 @@ static inline __attribute__((always_inline)) uint32_t *emit_overlay_byte_store_h
     RA_FreeARMRegister(&ptr, tmp);
     return ptr;
 }
+#endif /* PISTORM */
 
 static inline __attribute__((always_inline)) uint32_t *emit_special_store_hook(uint32_t *ptr, uint8_t size, uint8_t addr_reg, uint8_t value_reg)
 {
+#ifndef PISTORM
+    (void)size; (void)addr_reg; (void)value_reg;
+    return ptr;
+#else
     uint8_t tmp = RA_AllocARMRegister(&ptr);
     uint8_t flags_reg = RA_AllocARMRegister(&ptr);
     uint16_t scratch_save_mask = (uint16_t)((1 << tmp) | (1 << flags_reg));
@@ -119,12 +127,15 @@ static inline __attribute__((always_inline)) uint32_t *emit_special_store_hook(u
     switch (size)
     {
         case 4:
-            *ptr++ = movw_immed_u16(tmp, 0x0000);
-            *ptr++ = movt_immed_u16(tmp, 0x0008);
-            *ptr++ = cmp_reg(addr_reg, tmp);
-            match[match_count++] = ptr;
-            *ptr++ = b_cc(ARM_CC_CC, 0);
-
+            /*
+             * Low-memory longword stores are serviced directly by the paired
+             * strh/strh sequence emitted in store_reg_to_addr: fake low RAM is
+             * mapped linearly over 0..pistorm_fake_lowram_mb MB, so writes in
+             * 0..0x80000 already land in the correct backing buffer. Skipping
+             * the helper here mirrors the load-side fast path (see
+             * emit_special_load_hook size=4) and removes the DiagROM chip-RAM
+             * bit-walk bottleneck at pc=0xf80252.
+             */
             *ptr++ = movw_immed_u16(tmp, 0x0000);
             *ptr++ = movt_immed_u16(tmp, 0x0008);
             *ptr++ = cmp_reg(addr_reg, tmp);
@@ -373,10 +384,15 @@ static inline __attribute__((always_inline)) uint32_t *emit_special_store_hook(u
     RA_FreeARMRegister(&ptr, flags_reg);
     RA_FreeARMRegister(&ptr, tmp);
     return ptr;
+#endif /* PISTORM */
 }
 
 static inline __attribute__((always_inline)) uint32_t *emit_special_load_hook(uint32_t *ptr, uint8_t size, uint8_t addr_reg, uint8_t value_reg)
 {
+#ifndef PISTORM
+    (void)size; (void)addr_reg; (void)value_reg;
+    return ptr;
+#else
     uint8_t cmp_tmp = RA_AllocARMRegister(&ptr);
     uint8_t flags_reg = RA_AllocARMRegister(&ptr);
     uint16_t scratch_save_mask = (uint16_t)((1 << cmp_tmp) | (1 << flags_reg));
@@ -665,6 +681,7 @@ static inline __attribute__((always_inline)) uint32_t *emit_special_load_hook(ui
     RA_FreeARMRegister(&ptr, flags_reg);
     RA_FreeARMRegister(&ptr, cmp_tmp);
     return ptr;
+#endif /* PISTORM */
 }
 
 uint32_t *EMIT_HookSpecialLoad(uint32_t *ptr, uint8_t size, uint8_t addr_reg, uint8_t value_reg)
@@ -693,6 +710,10 @@ uint32_t *EMIT_HookSpecialStore(uint32_t *ptr, uint8_t size, uint8_t addr_reg, u
 
 static inline __attribute__((always_inline)) uint32_t *emit_special_load_helper_only(uint32_t *ptr, uint8_t size, uint8_t addr_reg, uint8_t value_reg)
 {
+#ifndef PISTORM
+    (void)size; (void)addr_reg; (void)value_reg;
+    return ptr;
+#else
     uint8_t flags_reg = RA_AllocARMRegister(&ptr);
     uint16_t scratch_save_mask = (uint16_t)(1 << flags_reg);
     uint32_t *skip_literal;
@@ -723,6 +744,7 @@ static inline __attribute__((always_inline)) uint32_t *emit_special_load_helper_
 
     RA_FreeARMRegister(&ptr, flags_reg);
     return ptr;
+#endif /* PISTORM */
 }
 #endif
 
@@ -861,6 +883,21 @@ static inline __attribute__((always_inline)) uint32_t * load_reg_from_addr_offse
                 }
                 else
                 {
+#ifndef PISTORM
+                    /* Non-PiStorm: simple direct load with offset */
+                    if (offset > -256 && offset < 256)
+                    {
+                        if (offset >= 0)
+                            *ptr++ = ldr_offset(base, reg, offset);
+                        else
+                            *ptr++ = ldr_offset_preindex(base, reg, -offset);
+                    }
+                    else
+                    {
+                        *ptr++ = add_reg(reg_d16, base, reg_d16, 0);
+                        *ptr++ = ldr_offset(reg_d16, reg, 0);
+                    }
+#else
                     uint8_t addr_reg = reg_d16;
                     uint8_t low_reg = RA_AllocARMRegister(&ptr);
                     uint8_t cmp_tmp = RA_AllocARMRegister(&ptr);
@@ -1037,6 +1074,7 @@ static inline __attribute__((always_inline)) uint32_t * load_reg_from_addr_offse
                     RA_FreeARMRegister(&ptr, flags_reg);
                     RA_FreeARMRegister(&ptr, cmp_tmp);
                     RA_FreeARMRegister(&ptr, low_reg);
+#endif /* PISTORM */
                 }
 #endif
                 break;
