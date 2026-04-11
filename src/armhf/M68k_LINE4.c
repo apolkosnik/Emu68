@@ -78,7 +78,11 @@ uint32_t *EMIT_CLR(uint32_t *ptr, uint16_t opcode, uint16_t **m68k_ptr, uint16_t
 #ifdef __aarch64__
                     *ptr++ = bic_immed(dn, dn, 16, 0);
 #else
-                    *ptr++ = bic_immed(dn, dn, 0xffff);
+                    /* ARM32: bic_immed cannot encode 0xffff as operand2 without
+                     * corrupting the Rd field (upper nibble of mask spills into
+                     * Rd, turning BIC Rn,Rn,#0xffff into BIC PC,Rn,#0x3fc and
+                     * branching to a garbage address). Use BFC instead. */
+                    *ptr++ = bfc(dn, 0, 16);
 #endif
             }
         }
